@@ -11,3 +11,7 @@ pytest-backend:
   artifacts:
     paths:
       - coverage.xml
+    when: always
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
