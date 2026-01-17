@@ -14,13 +14,13 @@ sonarcloud-backend:
     # Install ARM-compatible Java
     - apk add --no-cache curl unzip openjdk17-jre
 
-    # Download NO-JRE Sonar Scanner (architecture-agnostic)
-    - curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux-nojre.zip
+    # Download NO-JRE Sonar Scanner (follow redirects!)
+    - curl -L -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux-nojre.zip
     - unzip sonar-scanner.zip
     - mv sonar-scanner-*/ sonar-scanner
     - export PATH="$PWD/sonar-scanner/bin:$PATH"
 
-    # Sanity check
+    # Sanity checks
     - java -version
     - sonar-scanner --version
   script:
