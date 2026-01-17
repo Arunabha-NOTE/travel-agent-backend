@@ -3,4 +3,5 @@ stages:
   - analysis
 
 include:
+  - local: ".gitlab/ci/test.yml"
   - local: ".gitlab/ci/sonar.yml"
