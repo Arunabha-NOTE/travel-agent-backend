@@ -1,6 +1,8 @@
 sonarcloud-backend:
   stage: analysis
-  image: sonarsource/sonar-scanner-cli:5
+  image:
+    name: sonarsource/sonar-scanner-cli:5
+    entrypoint: [""]
   tags:
     - coolify
   variables:
