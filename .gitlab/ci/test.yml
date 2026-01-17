@@ -7,11 +7,11 @@ pytest-backend:
     - pip install uv
     - uv sync --dev
   script:
-    - pytest --cov=app --cov-report=xml
+    - uv run pytest --cov=app --cov-report=xml
   artifacts:
     paths:
       - coverage.xml
     when: always
   rules:
-    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
