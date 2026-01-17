@@ -1,0 +1,17 @@
+pytest-backend:
+  stage: test
+  image: python:3.11-slim
+  tags:
+    - coolify
+  before_script:
+    - pip install uv
+    - uv sync --dev
+  script:
+    - pytest --cov=app --cov-report=xml
+  artifacts:
+    paths:
+      - coverage.xml
+    when: always
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
