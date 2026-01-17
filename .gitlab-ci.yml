@@ -1,5 +1,6 @@
 stages:
   - analysis
+  - sonarcloud-check
 
 include:
   - local: ".gitlab/ci/sonar.yml"
