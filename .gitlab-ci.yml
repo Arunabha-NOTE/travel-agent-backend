@@ -4,3 +4,4 @@ stages:
 
 include:
   - local: ".gitlab/ci/sonar.yml"
+  - local: ".gitlab/ci/sonar.yml"
