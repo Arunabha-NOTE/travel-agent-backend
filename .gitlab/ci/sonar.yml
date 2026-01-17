@@ -1,6 +1,6 @@
 sonarcloud-backend:
   stage: analysis
-  image: alpine:3.19
+  image: debian:bookworm-slim
   tags:
     - coolify
   variables:
@@ -11,16 +11,18 @@ sonarcloud-backend:
     paths:
       - .sonar/cache
   before_script:
-    # Install native ARM Java + tools
-    - apk add --no-cache curl unzip openjdk17-jre
+    # Install required tools + Java (glibc-based)
+    - apt-get update
+    - apt-get install -y curl unzip openjdk-17-jre ca-certificates
+    - update-ca-certificates
 
-    # Download the **ARM64** Sonar Scanner you just referenced
+    # Download ARM64 Sonar Scanner (glibc-compatible)
     - curl -L -o sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.0.1.6346-linux-aarch64.zip
     - unzip sonar-scanner.zip
     - mv sonar-scanner-* sonar-scanner
     - export PATH="$PWD/sonar-scanner/bin:$PATH"
 
-    # Optional sanity checks
+    # Sanity checks
     - java -version
     - sonar-scanner --version
   script:
