@@ -1,0 +1,5 @@
+stages:
+  - analysis
+
+include:
+  - local: ".gitlab/ci/sonar.yml"
