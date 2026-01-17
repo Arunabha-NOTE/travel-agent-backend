@@ -11,16 +11,16 @@ sonarcloud-backend:
     paths:
       - .sonar/cache
   before_script:
-    # Install ARM-compatible Java
+    # Install native ARM Java + tools
     - apk add --no-cache curl unzip openjdk17-jre
 
-    # Download NO-JRE Sonar Scanner (follow redirects!)
-    - curl -L -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux-nojre.zip
+    # Download the **ARM64** Sonar Scanner you just referenced
+    - curl -L -o sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.0.1.6346-linux-aarch64.zip
     - unzip sonar-scanner.zip
-    - mv sonar-scanner-*/ sonar-scanner
+    - mv sonar-scanner-* sonar-scanner
     - export PATH="$PWD/sonar-scanner/bin:$PATH"
 
-    # Sanity checks
+    # Optional sanity checks
     - java -version
     - sonar-scanner --version
   script:
