@@ -30,6 +30,6 @@ repos:
     hooks:
       - id: pytest-pre-push
         name: pytest-pre-push
-        entry: pytest
+        entry: uv run pytest
         language: system
         stages: [pre-push]
