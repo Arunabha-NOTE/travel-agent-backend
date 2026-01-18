@@ -1,0 +1,37 @@
+repos:
+  # -------------------------
+  # Ruff: formatter + linter
+  # -------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.11
+    hooks:
+      - id: ruff-format
+        name: ruff-format
+
+      - id: ruff
+        name: ruff-check
+        args: ["--fix"]
+
+  # --------------------------------
+  # Commit message convention check
+  # --------------------------------
+  - repo: local
+    hooks:
+      - id: commit-message-check
+        name: commit-message-check
+        entry: python scripts/commit_msg_check.py
+        language: system
+        stages: [commit-msg]
+
+  # -------------------------
+  # Pre-push: backend build
+  # -------------------------
+  - repo: local
+    hooks:
+      - id: pytest-pre-push
+        name: pytest-pre-push
+        entry: uv run pytest --no-cov
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
