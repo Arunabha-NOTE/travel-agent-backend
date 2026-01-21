@@ -1,6 +1,6 @@
 backend-lint:
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   rules:
     - if: $CI_MERGE_REQUEST_IID
     - if: $CI_COMMIT_BRANCH == "main"

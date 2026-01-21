@@ -1,6 +1,6 @@
 pytest-backend:
   stage: test
-  image: python:3.11-slim
+  image: python:3.14-slim
   tags:
     - coolify
   before_script:
