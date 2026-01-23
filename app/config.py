@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+
 from dotenv import dotenv_values
 
 
@@ -14,3 +15,7 @@ def env(key: str, default: str | None = None) -> str | None:
 
 
 SENTRY_DSN: str | None = env("SENTRY_DSN")
+
+OTEL_EXPORTER_OTLP_ENDPOINT: str | None = env(
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
+)
