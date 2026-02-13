@@ -5,12 +5,12 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.11
     hooks:
-      - id: ruff-format
-        name: ruff-format
-
       - id: ruff
         name: ruff-check
         args: ["--fix"]
+        
+      - id: ruff-format
+        name: ruff-format
 
   # --------------------------------
   # Commit message convention check
