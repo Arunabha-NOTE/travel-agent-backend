@@ -1,18 +1,17 @@
 import sentry_sdk
 import time
 from fastapi import FastAPI, Request, Response
-from app.config import SENTRY_DSN
-from app.logging import structlog
-from app.metrics import HTTP_REQUESTS, HTTP_LATENCY
+from app.core.config import settings
+from app.core.logging import structlog
+from app.core.metrics import HTTP_REQUESTS, HTTP_LATENCY
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from app.telemetry import setup_telemetry
+from app.core.telemetry import setup_telemetry
 
 logger = structlog.get_logger(__name__)
 
-
 sentry_sdk.init(
-    dsn=SENTRY_DSN,
+    dsn=settings.SENTRY_DSN,
     send_default_pii=True,
 )
 

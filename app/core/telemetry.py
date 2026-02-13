@@ -6,7 +6,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
-from app.config import (
+from app.core.config import (
     OTEL_SERVICE_NAME,
     OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_TRACES_EXPORTER,
