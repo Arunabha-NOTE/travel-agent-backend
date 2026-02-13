@@ -6,11 +6,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
-from app.core.config import (
-    OTEL_SERVICE_NAME,
-    OTEL_EXPORTER_OTLP_ENDPOINT,
-    OTEL_TRACES_EXPORTER,
-)
+from app.core.config import settings
 
 
 def setup_telemetry():
@@ -18,7 +14,7 @@ def setup_telemetry():
     # Create resource with service identification
     resource = Resource.create(
         {
-            "service.name": OTEL_SERVICE_NAME,
+            "service.name": settings.OTEL_SERVICE_NAME,
             "service.version": "0.1.0",
             "deployment.environment": "production",
         }
@@ -28,8 +24,10 @@ def setup_telemetry():
     provider = TracerProvider(resource=resource)
 
     # Configure OTLP exporter (only if enabled)
-    if OTEL_TRACES_EXPORTER == "otlp":
-        exporter = OTLPSpanExporter(endpoint=f"{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces")
+    if settings.OTEL_TRACES_EXPORTER == "otlp":
+        exporter = OTLPSpanExporter(
+            endpoint=f"{settings.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces"
+        )
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
     # Set global tracer provider
