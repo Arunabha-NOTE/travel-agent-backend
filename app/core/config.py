@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
 
+    # === CORS Configuration ===
+    CORS_ORIGINS: list[str] = [
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8080",
+    ]
+
     # === Application Environment ===
     ENVIRONMENT: str = "development"
     DEBUG: bool = False

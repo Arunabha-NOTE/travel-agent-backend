@@ -1,14 +1,20 @@
-import sentry_sdk
 import time
+
+import sentry_sdk
 from fastapi import FastAPI, Request, Response
-from app.core.config import settings
-from app.core.logging import structlog
-from app.core.metrics import HTTP_REQUESTS, HTTP_LATENCY
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app.api.v1.auth import router as auth_router
+from app.api.v1.users import router as users_router
+from app.core.config import settings
+from app.core.handlers import register_exception_handlers
+from app.core.logging import get_logger
+from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
 from app.core.telemetry import setup_telemetry
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 sentry_sdk.init(
     dsn=settings.SENTRY_DSN,
@@ -17,9 +23,28 @@ sentry_sdk.init(
 
 setup_telemetry()
 
-app = FastAPI()
+app = FastAPI(
+    title=settings.API_TITLE,
+    version=settings.API_VERSION,
+)
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 FastAPIInstrumentor.instrument_app(app)
+
+# Register exception handlers
+register_exception_handlers(app)
+
+# Include API routers
+app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
+app.include_router(users_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.middleware("http")
