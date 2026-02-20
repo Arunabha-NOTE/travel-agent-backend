@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -11,12 +10,6 @@ class Settings(BaseSettings):
     All settings are validated at startup using Pydantic.
     Environment variables are loaded from .env file and environment.
     """
-
-    model_config = ConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=True,
-    )
 
     # === Sentry Configuration ===
     SENTRY_DSN: str | None = None
@@ -53,6 +46,11 @@ class Settings(BaseSettings):
     # === Application Environment ===
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = True
 
 
 # Singleton instance - used throughout the app
