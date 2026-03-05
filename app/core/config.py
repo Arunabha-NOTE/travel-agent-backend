@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -18,11 +18,11 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "chatbot-backend"
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://141.148.203.99:4318"
     OTEL_EXPORTER_OTLP_PROTOCOL: str = "http/protobuf"
-    OTEL_TRACES_EXPORTER: str = "otlp"
+    OTEL_TRACES_EXPORTER: str = "none"
 
     # === Database Configuration ===
     SQLALCHEMY_DATABASE_URI: str = (
-        "postgresql+asyncpg://user:password@localhost/chatbot"
+        "postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot"
     )
 
     # === API Configuration ===
@@ -47,10 +47,11 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+    )
 
 
 # Singleton instance - used throughout the app

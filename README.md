@@ -43,6 +43,50 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 Open the interactive docs at http://localhost:8000/docs to exercise the endpoints.
 
+## Run with Docker Compose (Backend + Postgres + pgvector)
+
+From the `chatbot-backend` directory:
+
+```bash
+docker compose up --build
+```
+
+Services:
+
+- API: http://localhost:8000
+- Postgres (`pgvector` enabled): `localhost:5432`
+
+The compose stack automatically enables the `vector` extension on first database initialization.
+
+## Authentication (Current)
+
+- Username/password only (no MFA)
+- Passwords are hashed with `bcrypt` before storing
+- Endpoints:
+   - `POST /api/v1/auth/register` with `{ "username": "...", "password": "..." }`
+   - `POST /api/v1/auth/login` with `{ "username": "...", "password": "..." }`
+
+## Observability
+
+- **Structured logging**: Request completion logs include `request_id`, `status_code`, `duration_ms`, method, and path.
+- **Error wrappers**: Custom exceptions (`AppException` hierarchy) are centrally handled and serialized with consistent error payloads.
+- **Prometheus metrics**:
+   - `http_requests_total{method,path,status}`
+   - `http_request_duration_seconds{path}`
+   - `auth_events_total{action,outcome}`
+   - `exception_events_total{exception_type,path}`
+- **OpenTelemetry traces**:
+   - FastAPI auto-instrumentation (incoming HTTP spans)
+   - SQLAlchemy and `requests` instrumentation
+   - Manual spans for key auth/user operations
+   - Exceptions are recorded on active spans
+
+Observability endpoints and config:
+
+- Metrics endpoint: `GET /metrics`
+- OTLP target: set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_TRACES_EXPORTER=otlp`
+- Service metadata: `OTEL_SERVICE_NAME`, `ENVIRONMENT`
+
 ## Useful Commands
 
 - Run tests: `pytest`

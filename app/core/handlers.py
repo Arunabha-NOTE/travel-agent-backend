@@ -3,12 +3,22 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.exceptions import AppException
 from app.core.logging import get_logger
+from app.core.metrics import EXCEPTION_EVENTS
 
 logger = get_logger(__name__)
+
+
+def _mark_span_error(exc: Exception) -> None:
+    span = trace.get_current_span()
+    if span and span.is_recording():
+        span.record_exception(exc)
+        span.set_status(Status(StatusCode.ERROR, str(exc)))
 
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
@@ -26,6 +36,8 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
         method=request.method,
         details=exc.details,
     )
+    _mark_span_error(exc)
+    EXCEPTION_EVENTS.labels(exc.error_code, request.url.path).inc()
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -48,6 +60,8 @@ async def http_exception_handler(
         path=request.url.path,
         method=request.method,
     )
+    _mark_span_error(exc)
+    EXCEPTION_EVENTS.labels("HTTP_ERROR", request.url.path).inc()
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -72,6 +86,8 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
         method=request.method,
         exc_info=exc,
     )
+    _mark_span_error(exc)
+    EXCEPTION_EVENTS.labels(exc.__class__.__name__, request.url.path).inc()
 
     return JSONResponse(
         status_code=500,

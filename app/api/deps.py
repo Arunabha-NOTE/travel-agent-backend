@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import UnauthorizedError
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.session import async_session_maker
@@ -53,22 +54,14 @@ async def get_current_user_token(
         HTTPException: If token is missing, invalid, or expired
     """
     if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError("Missing authorization header")
 
     try:
         scheme, token = authorization.split()
         if scheme.lower() != "bearer":
             raise ValueError("Invalid authentication scheme")
     except (ValueError, IndexError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError("Invalid authorization header format")
 
     try:
         payload = jwt.decode(
@@ -82,11 +75,7 @@ async def get_current_user_token(
         return payload
     except JWTError as e:
         logger.warning("JWT verification failed", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError("Invalid or expired token")
 
 
 async def get_current_user(
@@ -115,10 +104,7 @@ async def get_current_user(
     user_id: str | None = token.get("sub")
     if not user_id:
         logger.warning("Token missing user ID")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
+        raise UnauthorizedError("Invalid token")
 
     # TODO: Implement actual database lookup
     # For now, return the token payload as user
@@ -141,11 +127,7 @@ def get_token_from_header(authorization: str | None = None) -> str:
         HTTPException: If token is missing or header format is invalid
     """
     if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError("Missing authorization header")
 
     try:
         scheme, token = authorization.split()
@@ -153,8 +135,4 @@ def get_token_from_header(authorization: str | None = None) -> str:
             raise ValueError("Invalid authentication scheme")
         return token
     except (ValueError, IndexError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError("Invalid authorization header format")

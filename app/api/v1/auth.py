@@ -1,14 +1,21 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.core import ConflictError, DatabaseError, UnauthorizedError
 from app.core.logging import get_logger
-from app.core.security import create_access_token
+from app.core.metrics import AUTH_EVENTS
+from app.core.security import create_access_token, hash_password, verify_password
+from app.core.telemetry import get_tracer
+from app.models.user import User
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -16,8 +23,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     """Login request schema."""
 
-    email: EmailStr
-    password: str
+    username: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
 
 
 class LoginResponse(BaseModel):
@@ -32,6 +39,13 @@ class TokenRefreshRequest(BaseModel):
     """Token refresh request schema."""
 
     refresh_token: str
+
+
+class RegisterRequest(BaseModel):
+    """Registration request schema."""
+
+    username: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -52,34 +66,45 @@ async def login(
     Raises:
         HTTPException: If credentials are invalid
     """
-    logger.info("Login attempt", email=credentials.email)
+    with tracer.start_as_current_span("auth.login") as span:
+        logger.info("Login attempt", username=credentials.username)
+        AUTH_EVENTS.labels("login", "attempt").inc()
 
-    # TODO: Implement actual database lookup
-    # user = await db.execute(select(User).where(User.email == credentials.email))
-    # user = user.scalars().first()
+        try:
+            result = await db.execute(
+                select(User).where(User.username == credentials.username)
+            )
+            user = result.scalar_one_or_none()
+        except SQLAlchemyError as error:
+            logger.exception(
+                "Database error during login",
+                username=credentials.username,
+                exc_info=error,
+            )
+            raise DatabaseError("Failed to authenticate user") from error
 
-    # For demo purposes, accept any credentials
-    if not credentials.password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
+        if not user or not verify_password(credentials.password, user.hashed_password):
+            span.set_attribute("auth.login.success", False)
+            AUTH_EVENTS.labels("login", "failure").inc()
+            raise UnauthorizedError("Invalid credentials")
+
+        access_token = create_access_token(data={"sub": str(user.id)})
+        span.set_attribute("auth.login.success", True)
+        span.set_attribute("auth.user_id", user.id)
+        AUTH_EVENTS.labels("login", "success").inc()
+
+        logger.info("User logged in", user_id=user.id, username=user.username)
+
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user_id=user.id,
         )
-
-    # Create access token
-    access_token = create_access_token(data={"sub": "demo_user_1"})
-
-    logger.info("User logged in", email=credentials.email)
-
-    return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user_id=1,
-    )
 
 
 @router.post("/register", response_model=LoginResponse)
 async def register(
-    credentials: LoginRequest,
+    credentials: RegisterRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -95,34 +120,50 @@ async def register(
     Raises:
         HTTPException: If email already exists or validation fails
     """
-    logger.info("Registration attempt", email=credentials.email)
+    with tracer.start_as_current_span("auth.register") as span:
+        logger.info("Registration attempt", username=credentials.username)
+        AUTH_EVENTS.labels("register", "attempt").inc()
 
-    # TODO: Implement actual user creation
-    # Check if user exists
-    # user = await db.execute(select(User).where(User.email == credentials.email))
-    # if user.scalars().first():
-    #     raise HTTPException(
-    #         status_code=status.HTTP_409_CONFLICT,
-    #         detail="Email already registered",
-    #     )
+        try:
+            existing_user = await db.execute(
+                select(User).where(User.username == credentials.username)
+            )
+            if existing_user.scalar_one_or_none() is not None:
+                span.set_attribute("auth.register.success", False)
+                AUTH_EVENTS.labels("register", "failure").inc()
+                raise ConflictError(
+                    "Username already registered",
+                    details={"username": credentials.username},
+                )
 
-    # Hash password and create user
-    # hashed_password = hash_password(credentials.password)
-    # new_user = User(email=credentials.email, hashed_password=hashed_password)
-    # db.add(new_user)
-    # await db.commit()
-    # await db.refresh(new_user)
+            new_user = User(
+                username=credentials.username,
+                hashed_password=hash_password(credentials.password),
+            )
+            db.add(new_user)
+            await db.commit()
+            await db.refresh(new_user)
+        except SQLAlchemyError as error:
+            await db.rollback()
+            logger.exception(
+                "Database error during registration",
+                username=credentials.username,
+                exc_info=error,
+            )
+            raise DatabaseError("Failed to register user") from error
 
-    # Create access token
-    access_token = create_access_token(data={"sub": "new_user_1"})
+        access_token = create_access_token(data={"sub": str(new_user.id)})
+        span.set_attribute("auth.register.success", True)
+        span.set_attribute("auth.user_id", new_user.id)
+        AUTH_EVENTS.labels("register", "success").inc()
 
-    logger.info("User registered", email=credentials.email)
+        logger.info("User registered", user_id=new_user.id, username=new_user.username)
 
-    return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user_id=1,
-    )
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user_id=new_user.id,
+        )
 
 
 @router.get("/verify")

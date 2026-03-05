@@ -12,3 +12,15 @@ HTTP_LATENCY = Histogram(
     "HTTP request latency",
     ["path"],
 )
+
+AUTH_EVENTS = Counter(
+    "auth_events_total",
+    "Authentication events",
+    ["action", "outcome"],
+)
+
+EXCEPTION_EVENTS = Counter(
+    "exception_events_total",
+    "Unhandled/handled exception events",
+    ["exception_type", "path"],
+)
