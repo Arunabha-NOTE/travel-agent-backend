@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -10,7 +12,10 @@ from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256", "bcrypt"],
+    deprecated="auto",
+)
 
 
 def create_access_token(
@@ -80,9 +85,19 @@ def verify_token(token: str) -> dict[str, Any]:
         raise
 
 
+def create_refresh_token() -> str:
+    """Create a cryptographically secure refresh token string."""
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    """Hash a token for storage so raw tokens are never persisted."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def hash_password(password: str) -> str:
     """
-    Hash a password using bcrypt.
+    Hash a password using a bcrypt-compatible scheme.
 
     Args:
         password: Plain text password

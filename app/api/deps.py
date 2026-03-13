@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
-from fastapi import Depends
-from jose import JWTError, jwt
+from fastapi import Depends, Header
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import UnauthorizedError
-from app.core.config import settings
+from app.core import ResourceNotFoundError, UnauthorizedError
 from app.core.logging import get_logger
+from app.core.security import verify_token
 from app.db.session import async_session_maker
+from app.models.user import User
 
 logger = get_logger(__name__)
 
@@ -39,7 +40,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def get_current_user_token(
-    authorization: str | None = None,
+    authorization: str | None = Header(default=None),
 ) -> dict:
     """
     Extract and verify JWT token from Authorization header.
@@ -64,16 +65,12 @@ async def get_current_user_token(
         raise UnauthorizedError("Invalid authorization header format")
 
     try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-        )
+        payload = verify_token(token)
         user_id: str | None = payload.get("sub")
         if user_id is None:
             raise ValueError("Token missing subject")
         return payload
-    except JWTError as e:
+    except Exception as e:
         logger.warning("JWT verification failed", error=str(e))
         raise UnauthorizedError("Invalid or expired token")
 
@@ -81,7 +78,7 @@ async def get_current_user_token(
 async def get_current_user(
     token: dict = Depends(get_current_user_token),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> User:
     """
     Get the currently authenticated user from JWT token.
 
@@ -106,14 +103,17 @@ async def get_current_user(
         logger.warning("Token missing user ID")
         raise UnauthorizedError("Invalid token")
 
-    # TODO: Implement actual database lookup
-    # For now, return the token payload as user
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalars().first()
+    if user is None:
+        raise ResourceNotFoundError(resource="User", resource_id=user_id)
+
     logger.info("User authenticated", user_id=user_id)
-    return {"user_id": user_id, **token}
+    return user
 
 
 # Optional: Token dependency that only returns the raw token
-def get_token_from_header(authorization: str | None = None) -> str:
+def get_token_from_header(authorization: str | None = Header(default=None)) -> str:
     """
     Extract raw JWT token from Authorization header.
 
