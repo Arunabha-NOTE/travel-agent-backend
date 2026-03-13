@@ -2,10 +2,12 @@ services:
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-chatbot}
-      POSTGRES_USER: ${POSTGRES_USER:-chatbot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatbot}
+      - POSTGRES_DB
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
@@ -13,7 +15,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-chatbot} -d ${POSTGRES_DB:-chatbot}",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB",
         ]
       interval: 10s
       timeout: 5s
@@ -27,25 +29,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      SQLALCHEMY_DATABASE_URI: ${SQLALCHEMY_DATABASE_URI:-postgresql+asyncpg://chatbot:chatbot@db:5432/chatbot}
-      VECTOR_DB_URL: ${VECTOR_DB_URL:-postgresql://chatbot:chatbot@db:5432/chatbot}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      DEBUG: ${DEBUG:-false}
-      API_V1_PREFIX: ${API_V1_PREFIX:-/api/v1}
-      API_TITLE: ${API_TITLE:-Chatbot Backend API}
-      API_VERSION: ${API_VERSION:-0.1.0}
-      CORS_ORIGINS: ${CORS_ORIGINS:-["https://travel-agent.arunabha.in","https://api.travel-agent.arunabha.in"]}
-      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      JWT_EXPIRATION_HOURS: ${JWT_EXPIRATION_HOURS:-24}
-      JWT_REFRESH_EXPIRATION_DAYS: ${JWT_REFRESH_EXPIRATION_DAYS:-30}
-      PASSWORD_RESET_EXPIRATION_MINUTES: ${PASSWORD_RESET_EXPIRATION_MINUTES:-30}
-      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-chatbot-backend}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://141.148.203.99:4318}
-      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
+    env_file:
+      - .env
     expose:
       - "8000"
 
