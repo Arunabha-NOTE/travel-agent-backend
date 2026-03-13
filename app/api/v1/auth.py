@@ -1,17 +1,33 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import select
+import secrets
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
-from app.core import ConflictError, DatabaseError, UnauthorizedError
+from app.api.deps import get_current_user_token, get_db
+from app.core import (
+    ConflictError,
+    ResourceNotFoundError,
+    UnauthorizedError,
+    ValidationError,
+)
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import AUTH_EVENTS
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    hash_token,
+    verify_password,
+)
 from app.core.telemetry import get_tracer
+from app.models.auth_session import AuthSession
+from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 
 logger = get_logger(__name__)
@@ -23,14 +39,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     """Login request schema."""
 
-    username: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=8, max_length=255)
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=255)
 
 
 class LoginResponse(BaseModel):
     """Login response schema."""
 
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     user_id: int
 
@@ -41,62 +58,115 @@ class TokenRefreshRequest(BaseModel):
     refresh_token: str
 
 
-class RegisterRequest(BaseModel):
-    """Registration request schema."""
+class LogoutRequest(BaseModel):
+    """Logout request schema."""
 
-    username: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=8, max_length=255)
+    refresh_token: str
+
+
+class RegisterRequest(BaseModel):
+    """Register request schema."""
+
+    email: EmailStr
+    password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request schema."""
+
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Forgot password response schema."""
+
+    message: str
+    reset_token: str | None = None
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password request schema."""
+
+    token: str
+    new_password: str
+
+
+def _username_from_email(email: str) -> str:
+    base = email.split("@")[0].strip().lower()
+    cleaned = "".join(char for char in base if char.isalnum() or char == "_")
+    suffix = secrets.token_hex(3)
+    return f"{cleaned or 'user'}_{suffix}"
+
+
+def _extract_request_metadata(request: Request) -> tuple[str | None, str | None]:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    ip_address = (
+        forwarded_for.split(",")[0].strip()
+        if forwarded_for
+        else (request.client.host if request.client else None)
+    )
+    user_agent = request.headers.get("user-agent")
+    return ip_address, user_agent
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
     credentials: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Authenticate user and return JWT access token.
-
-    Args:
-        credentials: User email and password
-        db: Database session
-
-    Returns:
-        LoginResponse with access_token
-
-    Raises:
-        HTTPException: If credentials are invalid
-    """
+    """Authenticate user and return JWT access and refresh tokens."""
     with tracer.start_as_current_span("auth.login") as span:
-        logger.info("Login attempt", username=credentials.username)
+        logger.info("Login attempt", email=credentials.email)
         AUTH_EVENTS.labels("login", "attempt").inc()
 
-        try:
-            result = await db.execute(
-                select(User).where(User.username == credentials.username)
-            )
-            user = result.scalar_one_or_none()
-        except SQLAlchemyError as error:
-            logger.exception(
-                "Database error during login",
-                username=credentials.username,
-                exc_info=error,
-            )
-            raise DatabaseError("Failed to authenticate user") from error
-
-        if not user or not verify_password(credentials.password, user.hashed_password):
+        result = await db.execute(
+            select(User).where(User.email == credentials.email.lower())
+        )
+        user = result.scalars().first()
+        if user is None or not verify_password(
+            credentials.password, user.hashed_password
+        ):
             span.set_attribute("auth.login.success", False)
             AUTH_EVENTS.labels("login", "failure").inc()
             raise UnauthorizedError("Invalid credentials")
 
-        access_token = create_access_token(data={"sub": str(user.id)})
+        if not user.is_active:
+            span.set_attribute("auth.login.success", False)
+            AUTH_EVENTS.labels("login", "failure").inc()
+            raise UnauthorizedError("User account is inactive")
+
+        access_token = create_access_token(
+            data={"sub": str(user.id), "email": user.email}
+        )
+        refresh_token = create_refresh_token()
+        refresh_token_hash = hash_token(refresh_token)
+        ip_address, user_agent = _extract_request_metadata(request)
+
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=settings.JWT_REFRESH_EXPIRATION_DAYS
+        )
+        session = AuthSession(
+            user_id=user.id,
+            refresh_token_hash=refresh_token_hash,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            expires_at=expires_at,
+        )
+        db.add(session)
+        await db.commit()
+
         span.set_attribute("auth.login.success", True)
         span.set_attribute("auth.user_id", user.id)
         AUTH_EVENTS.labels("login", "success").inc()
 
-        logger.info("User logged in", user_id=user.id, username=user.username)
+        logger.info(
+            "User logged in", email=credentials.email, user_id=user.id, ip=ip_address
+        )
 
         return LoginResponse(
             access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer",
             user_id=user.id,
         )
@@ -105,69 +175,216 @@ async def login(
 @router.post("/register", response_model=LoginResponse)
 async def register(
     credentials: RegisterRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Register a new user and return JWT access token.
-
-    Args:
-        credentials: User email and password
-        db: Database session
-
-    Returns:
-        LoginResponse with access_token for the new user
-
-    Raises:
-        HTTPException: If email already exists or validation fails
-    """
+    """Register a new user and return JWT access and refresh tokens."""
     with tracer.start_as_current_span("auth.register") as span:
-        logger.info("Registration attempt", username=credentials.username)
+        logger.info("Registration attempt", email=credentials.email)
         AUTH_EVENTS.labels("register", "attempt").inc()
 
-        try:
-            existing_user = await db.execute(
-                select(User).where(User.username == credentials.username)
+        existing = await db.execute(
+            select(User).where(User.email == credentials.email.lower())
+        )
+        if existing.scalars().first() is not None:
+            span.set_attribute("auth.register.success", False)
+            AUTH_EVENTS.labels("register", "failure").inc()
+            raise ConflictError(
+                "Email already registered", {"email": credentials.email}
             )
-            if existing_user.scalar_one_or_none() is not None:
-                span.set_attribute("auth.register.success", False)
-                AUTH_EVENTS.labels("register", "failure").inc()
-                raise ConflictError(
-                    "Username already registered",
-                    details={"username": credentials.username},
-                )
 
-            new_user = User(
-                username=credentials.username,
-                hashed_password=hash_password(credentials.password),
-            )
-            db.add(new_user)
-            await db.commit()
-            await db.refresh(new_user)
-        except SQLAlchemyError as error:
-            await db.rollback()
-            logger.exception(
-                "Database error during registration",
-                username=credentials.username,
-                exc_info=error,
-            )
-            raise DatabaseError("Failed to register user") from error
+        if len(credentials.password) < 8:
+            span.set_attribute("auth.register.success", False)
+            AUTH_EVENTS.labels("register", "failure").inc()
+            raise ValidationError("Password must be at least 8 characters")
 
-        access_token = create_access_token(data={"sub": str(new_user.id)})
+        new_user = User(
+            email=credentials.email.lower(),
+            username=_username_from_email(credentials.email),
+            hashed_password=hash_password(credentials.password),
+        )
+        db.add(new_user)
+        await db.flush()
+
+        access_token = create_access_token(
+            data={"sub": str(new_user.id), "email": new_user.email}
+        )
+        refresh_token = create_refresh_token()
+
+        ip_address, user_agent = _extract_request_metadata(request)
+        session = AuthSession(
+            user_id=new_user.id,
+            refresh_token_hash=hash_token(refresh_token),
+            ip_address=ip_address,
+            user_agent=user_agent,
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS),
+        )
+        db.add(session)
+        await db.commit()
+        await db.refresh(new_user)
+
         span.set_attribute("auth.register.success", True)
         span.set_attribute("auth.user_id", new_user.id)
         AUTH_EVENTS.labels("register", "success").inc()
 
-        logger.info("User registered", user_id=new_user.id, username=new_user.username)
+        logger.info("User registered", email=credentials.email, user_id=new_user.id)
 
         return LoginResponse(
             access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer",
             user_id=new_user.id,
         )
 
 
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_token(
+    payload: TokenRefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Exchange a valid refresh token for a new access token."""
+    token_hash = hash_token(payload.refresh_token)
+    now = datetime.now(timezone.utc)
+
+    result = await db.execute(
+        select(AuthSession).where(
+            and_(
+                AuthSession.refresh_token_hash == token_hash,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > now,
+            )
+        )
+    )
+    session = result.scalars().first()
+    if session is None:
+        raise UnauthorizedError("Invalid or expired refresh token")
+
+    user_result = await db.execute(select(User).where(User.id == session.user_id))
+    user = user_result.scalars().first()
+    if user is None:
+        raise ResourceNotFoundError("User", session.user_id)
+
+    session.last_used_at = now
+    ip_address, _ = _extract_request_metadata(request)
+    if ip_address:
+        session.ip_address = ip_address
+    await db.commit()
+
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email})
+    logger.info("Access token refreshed", user_id=user.id, session_id=session.id)
+
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=payload.refresh_token,
+        token_type="bearer",
+        user_id=user.id,
+    )
+
+
+@router.post("/logout")
+async def logout(
+    payload: LogoutRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke an active refresh-token session."""
+    token_hash = hash_token(payload.refresh_token)
+    result = await db.execute(
+        select(AuthSession).where(
+            and_(
+                AuthSession.refresh_token_hash == token_hash,
+                AuthSession.revoked_at.is_(None),
+            )
+        )
+    )
+    session = result.scalars().first()
+    if session:
+        session.revoked_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    return {"message": "Logged out successfully"}
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate and persist a password reset token when a user exists."""
+    result = await db.execute(select(User).where(User.email == payload.email.lower()))
+    user = result.scalars().first()
+
+    reset_token: str | None = None
+    if user:
+        reset_token = create_refresh_token()
+        db.add(
+            PasswordResetToken(
+                user_id=user.id,
+                token_hash=hash_token(reset_token),
+                requested_ip=_extract_request_metadata(request)[0],
+                expires_at=datetime.now(timezone.utc)
+                + timedelta(minutes=settings.PASSWORD_RESET_EXPIRATION_MINUTES),
+            )
+        )
+        await db.commit()
+
+    logger.info("Password reset requested", email=payload.email)
+
+    return ForgotPasswordResponse(
+        message="If an account exists for this email, a reset link has been sent",
+        reset_token=reset_token if settings.DEBUG else None,
+    )
+
+
+@router.post("/reset-password")
+async def reset_password(
+    payload: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset user password using a valid one-time reset token."""
+    if len(payload.new_password) < 8:
+        raise ValidationError("Password must be at least 8 characters")
+
+    token_hash = hash_token(payload.token)
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(PasswordResetToken).where(
+            and_(
+                PasswordResetToken.token_hash == token_hash,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > now,
+            )
+        )
+    )
+    reset = result.scalars().first()
+    if reset is None:
+        raise UnauthorizedError("Invalid or expired reset token")
+
+    user_result = await db.execute(select(User).where(User.id == reset.user_id))
+    user = user_result.scalars().first()
+    if user is None:
+        raise ResourceNotFoundError("User", reset.user_id)
+
+    user.hashed_password = hash_password(payload.new_password)
+    reset.used_at = now
+
+    active_sessions = await db.execute(
+        select(AuthSession).where(
+            and_(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        )
+    )
+    for session in active_sessions.scalars().all():
+        session.revoked_at = now
+
+    await db.commit()
+    logger.info("Password reset completed", user_id=user.id)
+    return {"message": "Password reset successful"}
+
+
 @router.get("/verify")
-async def verify_token():
+async def verify_token_endpoint(token: dict = Depends(get_current_user_token)):
     """
     Verify that the provided token is valid.
 
@@ -176,5 +393,5 @@ async def verify_token():
     Returns:
         {"message": "Token is valid"}
     """
-    logger.info("Token verification requested")
-    return {"message": "Token is valid"}
+    logger.info("Token verification requested", user_id=token.get("sub"))
+    return {"message": "Token is valid", "user_id": token.get("sub")}

@@ -61,7 +61,10 @@ def setup_telemetry(engine: AsyncEngine | None = None) -> None:
         LoggingInstrumentor().instrument(set_logging_format=False)
 
     sqlalchemy_instrumentor = SQLAlchemyInstrumentor()
-    if engine is not None and not sqlalchemy_instrumentor.is_instrumented_by_opentelemetry:
+    if (
+        engine is not None
+        and not sqlalchemy_instrumentor.is_instrumented_by_opentelemetry
+    ):
         sqlalchemy_instrumentor.instrument(engine=engine.sync_engine)
 
     logger.info(

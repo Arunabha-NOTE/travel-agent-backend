@@ -34,23 +34,33 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "your-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
+    JWT_REFRESH_EXPIRATION_DAYS: int = 30
+    PASSWORD_RESET_EXPIRATION_MINUTES: int = 30
 
     # === CORS Configuration ===
     CORS_ORIGINS: list[str] = [
         "http://localhost",
+        "http://127.0.0.1",
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:8000",
+        "http://127.0.0.1:8000",
         "http://localhost:8080",
+        "http://127.0.0.1:8080",
     ]
 
     # === Application Environment ===
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
 
+    # === Optional Vector DB Configuration ===
+    VECTOR_DB_URL: str = "http://localhost:6333"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="ignore",
     )
 
 

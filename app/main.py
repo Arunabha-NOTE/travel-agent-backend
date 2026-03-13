@@ -7,8 +7,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry import trace
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import text
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.chats import router as chats_router
 from app.api.v1.observability import router as observability_router
 from app.api.v1.users import router as users_router
 from app.core.config import settings
@@ -18,7 +20,6 @@ from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
 from app.core.telemetry import instrument_fastapi, setup_telemetry
 from app.db.base import Base
 from app.db.session import engine
-
 import app.models  # noqa: F401
 
 logger = get_logger(__name__)
@@ -37,10 +38,17 @@ async def lifespan(_: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_usage_millions DOUBLE PRECISION NOT NULL DEFAULT 0"
+                )
+            )
+        logger.info("Database schema initialization complete")
     except Exception as error:
         logger.warning("Database table initialization skipped", error=str(error))
 
     yield
+
 
 app = FastAPI(
     title=settings.API_TITLE,
@@ -52,6 +60,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,6 +74,7 @@ register_exception_handlers(app)
 # Include API routers
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(users_router, prefix=settings.API_V1_PREFIX)
+app.include_router(chats_router, prefix=settings.API_V1_PREFIX)
 app.include_router(observability_router, prefix=settings.API_V1_PREFIX)
 
 

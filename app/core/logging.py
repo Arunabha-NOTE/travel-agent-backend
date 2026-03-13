@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import logging
 import logging.handlers
 from pathlib import Path
@@ -35,14 +37,6 @@ def setup_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # === File Handler (always JSON for machine parsing) ===
-    file_handler = logging.handlers.RotatingFileHandler(
-        logs_dir / "app.log",
-        maxBytes=10_000_000,  # 10MB
-        backupCount=5,
-    )
-    file_handler.setLevel(log_level)
-
     # === Console Handler ===
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
@@ -64,11 +58,28 @@ def setup_logging() -> None:
             ],
         )
 
-    file_handler.setFormatter(formatter)
+    argv_text = " ".join(sys.argv).lower()
+    is_pytest_run = (
+        os.getenv("PYTEST_CURRENT_TEST") is not None
+        or os.getenv("PYTEST_VERSION") is not None
+        or "pytest" in argv_text
+    )
+    enable_file_logging = not is_pytest_run
+
+    if enable_file_logging:
+        file_handler = logging.handlers.RotatingFileHandler(
+            logs_dir / "app.log",
+            maxBytes=10_000_000,  # 10MB
+            backupCount=5,
+        )
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+
     console_handler.setFormatter(formatter)
 
     # Add handlers to root logger
-    root_logger.addHandler(file_handler)
+    if enable_file_logging:
+        root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
     # === Configure structlog ===
