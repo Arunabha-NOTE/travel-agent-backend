@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+import uuid
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean
 
 from app.db.base import Base
 
@@ -33,9 +35,13 @@ class ChatMessage(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    chat_room_id: Mapped[int] = mapped_column(
+    chat_room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("chat_rooms.id", ondelete="CASCADE"),
         index=True,
+    )
+    is_summarized: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
     )
     sender_role: Mapped[MessageSenderRole] = mapped_column(
         Enum(MessageSenderRole, name="message_sender_role", validate_strings=True),

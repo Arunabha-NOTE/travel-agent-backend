@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any
 
 from app.api.deps import get_current_user, get_db
 from app.core import ResourceNotFoundError, get_logger
@@ -25,7 +26,7 @@ class ItineraryResponse(BaseModel):
     """Response schema for a chat itinerary."""
 
     id: int
-    chat_room_id: int
+    chat_room_id: uuid.UUID
     itinerary_data: dict[str, Any]
     generated_at: datetime
     updated_at: datetime
@@ -33,7 +34,7 @@ class ItineraryResponse(BaseModel):
 
 @router.get("/{chat_id}/itinerary", response_model=ItineraryResponse)
 async def get_itinerary(
-    chat_id: int,
+    chat_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

@@ -31,3 +31,5 @@ dist/
 
 # logging
 logs/app.log
+
+chatbot-backend\drop_db.py

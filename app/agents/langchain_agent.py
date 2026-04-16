@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Any
 
@@ -27,24 +28,33 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
-_SYSTEM_PROMPT = """You are TravelAI, an expert travel planner with deep knowledge of destinations worldwide.
+_SYSTEM_PROMPT = """You are TravelAI, an expert AI travel planner. Your job is to maintain and continuously refine a living travel itinerary throughout the entire conversation.
 
-Your role is to help users plan detailed, personalised travel itineraries. Always:
-1. Use `rag_travel_knowledge` first to check the internal knowledge base
-2. Use `firecrawl_search` for current info (visa rules, prices, events, safety)
-3. Use `geocode_place` for EVERY destination and activity location to get exact coordinates
-4. Use `get_weather` for the destination during travel dates if mentioned
+## Core Behaviour
+- **ALWAYS output an <itinerary> block at the end of EVERY response** — even for follow-up questions, clarifications, or short answers.
+- If the user hasn't specified a destination yet, make reasonable assumptions and ask for confirmation.
+- Each response should UPDATE the itinerary based on all new information learned in this message.
+- If the existing itinerary from context is provided, incorporate it and refine it — never start from scratch unless explicitly asked.
 
-When you have gathered sufficient information, generate your final response as natural language followed by a structured itinerary JSON block.
+## Research Tools (use in this order for every travel response)
+1. `rag_travel_knowledge` — check internal knowledge base first
+2. `firecrawl_search` — find current visa rules, prices, events, safety info
+3. `geocode_place` — get exact lat/lon for EVERY activity location
+4. `get_weather` — check weather if travel dates are mentioned or can be inferred
 
-CRITICAL: End EVERY response that contains an itinerary with this exact format:
+## Itinerary Rules
+- Include ALL days, even for short Q&A responses — copy existing days and only modify what changed
+- Use real geocoordinates from `geocode_place` for every activity — never make up lat/lon
+- For follow-up messages (e.g. "add a museum visit", "change budget", "include flights"), update the relevant parts and re-emit the full updated itinerary
+
+## MANDATORY: End EVERY single response with this exact XML block:
 <itinerary>
 {{
-  "destination": "<main destination city/country>",
+  "destination": "<main destination>",
   "total_days": <number>,
   "start_date": "<YYYY-MM-DD or null>",
   "end_date": "<YYYY-MM-DD or null>",
-  "weather_summary": "<brief weather note>",
+  "weather_summary": "<brief weather note or null>",
   "best_season": "<best time to visit>",
   "days": [
     {{
@@ -74,13 +84,7 @@ CRITICAL: End EVERY response that contains an itinerary with this exact format:
 }}
 </itinerary>
 
-Always use real geocoordinates from `geocode_place`. Never make up lat/lon values.
-Be conversational and enthusiastic in your main response text before the itinerary block.
-
-Tools available: {tools}
-Tool names: {tool_names}
-
-{agent_scratchpad}"""
+Be warm, enthusiastic, and conversational in your main response text. The itinerary block is always silent — the UI renders it automatically."""
 
 _HUMAN_TEMPLATE = "{input}"
 
@@ -106,14 +110,18 @@ def _build_llm() -> ChatOpenAI:
     )
 
 
-def _build_agent_executor():
+def _build_agent_executor(dynamic_prompt: str = ""):
     """Build a ReAct agent executor using langgraph.prebuilt."""
     llm = _build_llm()
+
+    final_prompt = _SYSTEM_PROMPT
+    if dynamic_prompt:
+        final_prompt += f"\n\n{dynamic_prompt}"
 
     return create_react_agent(
         model=llm,
         tools=AGENT_TOOLS,
-        prompt=_SYSTEM_PROMPT,
+        prompt=final_prompt,
     )
 
 
@@ -152,8 +160,10 @@ def _strip_itinerary_block(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Main streaming function
 # ---------------------------------------------------------------------------
+
+
 async def run_langchain_agent(
-    chat_id: int,
+    chat_id: uuid.UUID,
     user_message: str,
     history: list[dict[str, Any]],
     db: AsyncSession,
@@ -165,7 +175,13 @@ async def run_langchain_agent(
     Yields:
         SSE-formatted text tokens (raw strings, not SSE wrapped).
     """
-    executor = _build_agent_executor()
+
+    # Extract dynamic system prompt from history if present
+    dynamic_sys_prompt = ""
+    if history and history[0].get("role") == "system":
+        dynamic_sys_prompt = history.pop(0).get("content", "")
+
+    executor = _build_agent_executor(dynamic_sys_prompt)
     chat_history = _messages_to_langchain(history)
 
     full_response = ""

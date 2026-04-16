@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
@@ -32,7 +33,7 @@ class ChatRenameRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Response schema for chat room operations."""
 
-    id: int
+    id: uuid.UUID
     user_id: int
     title: str
     created_at: datetime
@@ -59,7 +60,7 @@ def _normalize_title(title: str) -> str:
 async def _get_owned_chat_or_404(
     *,
     db: AsyncSession,
-    chat_id: int,
+    chat_id: uuid.UUID,
     user_id: int,
 ) -> ChatRoom:
     result = await db.execute(
@@ -99,7 +100,7 @@ async def list_chats(
 
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat(
-    chat_id: int,
+    chat_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -128,7 +129,7 @@ async def create_chat(
 
 @router.patch("/{chat_id}", response_model=ChatResponse)
 async def rename_chat(
-    chat_id: int,
+    chat_id: uuid.UUID,
     payload: ChatRenameRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -148,7 +149,7 @@ async def rename_chat(
 
 @router.delete("/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_chat(
-    chat_id: int,
+    chat_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

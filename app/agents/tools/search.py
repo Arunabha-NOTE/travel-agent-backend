@@ -22,27 +22,24 @@ async def firecrawl_search(query: str, num_results: int = 3) -> str:
         Concatenated scraped content from top search results.
     """
     try:
-        from firecrawl import FirecrawlApp  # type: ignore[import]
+        # firecrawl-py v4+ uses V1FirecrawlApp
+        from firecrawl.v1 import V1FirecrawlApp
 
-        app = FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
+        app = V1FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
 
-        # Use Firecrawl search endpoint
-        result = app.search(
-            query=query,
-            limit=min(num_results, 5),
-        )
+        # .search() returns a V1SearchResponse with .data: list[V1ScrapeResponse]
+        result = app.search(query=query, limit=min(num_results, 5))
 
-        if not result or not result.get("data"):
+        if not result or not result.data:
             return f"No results found for query: '{query}'"
 
         parts = []
-        for i, item in enumerate(result["data"], 1):
-            title = item.get("title", "Untitled")
-            url = item.get("url", "")
+        for i, item in enumerate(result.data, 1):
+            title = getattr(item, "title", None) or "Untitled"
+            url = getattr(item, "url", "") or ""
             content = (
-                item.get("markdown")
-                or item.get("content")
-                or item.get("description")
+                getattr(item, "markdown", None)
+                or getattr(item, "description", None)
                 or ""
             )
             # Truncate long content
@@ -50,10 +47,45 @@ async def firecrawl_search(query: str, num_results: int = 3) -> str:
                 content = content[:1500] + "..."
             parts.append(f"[Result {i}] {title}\nURL: {url}\n\n{content}")
 
-        return "\n\n---\n\n".join(parts)
+        return (
+            "\n\n---\n\n".join(parts)
+            if parts
+            else f"No results found for query: '{query}'"
+        )
 
     except ImportError:
-        return "Firecrawl not installed. Run: uv add firecrawl-py"
+        # Fallback for older SDK versions (< v4)
+        try:
+            from firecrawl import FirecrawlApp  # type: ignore[import]
+
+            app_old = FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
+            result = app_old.search(query=query, limit=min(num_results, 5))
+            raw_data = result.get("data", []) if isinstance(result, dict) else []
+            parts = []
+            for i, item in enumerate(raw_data, 1):
+                title = item.get("title", "Untitled")
+                url = item.get("url", "")
+                content = (
+                    item.get("markdown")
+                    or item.get("content")
+                    or item.get("description")
+                    or ""
+                )
+                if len(content) > 1500:
+                    content = content[:1500] + "..."
+                parts.append(f"[Result {i}] {title}\nURL: {url}\n\n{content}")
+            return (
+                "\n\n---\n\n".join(parts)
+                if parts
+                else f"No results found for query: '{query}'"
+            )
+        except Exception as e2:
+            return f"Web search unavailable: {e2}. Use your training knowledge instead."
+
     except Exception as e:
-        # Graceful fallback so agent can still function without valid key
+        from app.core.logging import get_logger
+
+        get_logger(__name__).warning(
+            "Firecrawl search error", error=str(e), query=query
+        )
         return f"Web search unavailable (Firecrawl error: {e}). Use your training knowledge instead."

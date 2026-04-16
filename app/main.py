@@ -20,7 +20,6 @@ from app.core.handlers import register_exception_handlers
 from app.core.logging import get_logger
 from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
 from app.core.telemetry import instrument_fastapi, setup_telemetry
-from app.db.base import Base
 from app.db.session import engine
 import app.models  # noqa: F401
 
@@ -39,13 +38,8 @@ async def lifespan(_: FastAPI):
     """Initialize runtime resources at application startup."""
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(
-                text(
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_usage_millions DOUBLE PRECISION NOT NULL DEFAULT 0"
-                )
-            )
-        logger.info("Database schema initialization complete")
+            await conn.execute(text("SELECT 1"))
+        logger.info("Database connection established")
     except Exception as error:
         logger.warning("Database table initialization skipped", error=str(error))
 

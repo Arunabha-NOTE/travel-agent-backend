@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Index, func
-from sqlalchemy.dialects.postgresql import JSONB
+import uuid
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -20,7 +21,8 @@ class ChatItinerary(Base):
     __table_args__ = (Index("ix_chat_itineraries_room_id", "chat_room_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    chat_room_id: Mapped[int] = mapped_column(
+    chat_room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("chat_rooms.id", ondelete="CASCADE"),
         unique=True,
     )

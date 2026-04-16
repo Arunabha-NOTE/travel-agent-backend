@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -14,6 +16,7 @@ from app.api.deps import get_current_user, get_db
 from app.core import ResourceNotFoundError, get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
 from app.models.chat_room import ChatRoom
+from app.models.chat_itinerary import ChatItinerary
 from app.models.user import User
 
 logger = get_logger(__name__)
@@ -32,7 +35,7 @@ class MessageResponse(BaseModel):
     """Response schema for a single chat message."""
 
     id: int
-    chat_room_id: int
+    chat_room_id: uuid.UUID
     sender_role: str
     content: str
     created_at: datetime
@@ -42,7 +45,7 @@ class MessageResponse(BaseModel):
 async def _get_owned_chat_or_404(
     *,
     db: AsyncSession,
-    chat_id: int,
+    chat_id: uuid.UUID,
     user_id: int,
 ) -> ChatRoom:
     result = await db.execute(
@@ -62,7 +65,7 @@ async def _get_owned_chat_or_404(
 
 @router.get("/{chat_id}/messages", response_model=list[MessageResponse])
 async def list_messages(
-    chat_id: int,
+    chat_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -91,7 +94,7 @@ async def list_messages(
 
 @router.post("/{chat_id}/messages")
 async def send_message(
-    chat_id: int,
+    chat_id: uuid.UUID,
     payload: SendMessageRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -122,7 +125,7 @@ async def send_message(
 
     await db.commit()
 
-    # Load chat history (last 20 messages)
+    # Load chat history (last 20 messages for context)
     history_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.chat_room_id == chat_id)
@@ -130,12 +133,76 @@ async def send_message(
         .limit(21)
     )
     history_msgs = list(reversed(history_result.scalars().all()))
-    # Exclude the message we just saved (last one is user's current msg)
+
+    # Auto-title: if this was the FIRST message (only 1 msg in history now),
+    # fire a background task to generate and save a descriptive title.
+    is_first_message = len(history_msgs) == 1
+    if is_first_message and chat and chat.title.lower() in ("new chat", ""):
+
+        async def _auto_title() -> None:
+            try:
+                from app.agents.titler import generate_chat_title
+                from app.db.session import async_session_maker
+
+                title = await generate_chat_title(payload.content)
+                if title:
+                    async with async_session_maker() as title_db:
+                        result = await title_db.execute(
+                            select(ChatRoom).where(ChatRoom.id == chat_id)
+                        )
+                        room = result.scalars().first()
+                        if room:
+                            room.title = title
+                            room.updated_at = datetime.now(timezone.utc)
+                            await title_db.commit()
+                            logger.info(
+                                "Chat title auto-updated",
+                                chat_id=chat_id,
+                                title=title,
+                            )
+            except Exception as exc:
+                logger.warning("Auto-title background task failed", error=str(exc))
+
+        asyncio.create_task(_auto_title())
+
+    # Auto-summarizer logic check
+    from app.agents.summarizer import check_and_summarize
+
+    asyncio.create_task(check_and_summarize(chat_id, db))
+
+    # Exclude the current user message from the history passed to the agent
     history = [
         {"role": m.sender_role.value, "content": m.content}
         for m in history_msgs[:-1]
         if m.sender_role in (MessageSenderRole.user, MessageSenderRole.assistant)
     ]
+
+    # Inject Context and Itinerary into the dynamic system prompt
+    system_parts = []
+    if chat and chat.context_summary:
+        system_parts.append(
+            f"## Conversation Summary (earlier messages)\n{chat.context_summary}"
+        )
+
+    itinerary_res = await db.execute(
+        select(ChatItinerary).where(ChatItinerary.chat_room_id == chat_id)
+    )
+    itinerary = itinerary_res.scalars().first()
+    if itinerary and itinerary.itinerary_data:
+        import json
+
+        itinerary_str = json.dumps(itinerary.itinerary_data, indent=2)
+        system_parts.append(
+            f"## Current Saved Itinerary (UPDATE and re-emit this with changes)\n"
+            f"```json\n{itinerary_str}\n```\n"
+            f"IMPORTANT: Always include the FULL updated itinerary in your response, "
+            f"even if only one thing changes. Never omit days that already exist."
+        )
+
+    if system_parts:
+        history.insert(
+            0, {"role": "system", "content": "\n\n---\n\n".join(system_parts)}
+        )
 
     logger.info(
         "Starting agent stream",

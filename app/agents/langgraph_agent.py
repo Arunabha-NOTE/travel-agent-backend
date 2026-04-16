@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Any, Sequence, Annotated, TypedDict
 import operator
+import uuid
 
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -61,20 +62,33 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
 
 
-def build_langgraph_agent():
+def build_langgraph_agent(dynamic_prompt: str = ""):
     """Build the LangGraph travel agent state machine."""
 
     llm = _build_llm()
+
+    # Prepend dynamic prompt to base prompts if provided
+    research_p = (
+        RESEARCH_PROMPT + f"\n\n{dynamic_prompt}" if dynamic_prompt else RESEARCH_PROMPT
+    )
+    logistics_p = (
+        LOGISTICS_PROMPT + f"\n\n{dynamic_prompt}"
+        if dynamic_prompt
+        else LOGISTICS_PROMPT
+    )
+    planner_p = (
+        PLANNER_PROMPT + f"\n\n{dynamic_prompt}" if dynamic_prompt else PLANNER_PROMPT
+    )
 
     # 1. Sub-agents using create_react_agent
     research_agent = create_react_agent(
         model=llm,
         tools=[rag_travel_knowledge, firecrawl_search],
-        prompt=RESEARCH_PROMPT,
+        prompt=research_p,
     )
 
     logistics_agent = create_react_agent(
-        model=llm, tools=[geocode_place, get_weather], prompt=LOGISTICS_PROMPT
+        model=llm, tools=[geocode_place, get_weather], prompt=logistics_p
     )
 
     # 2. Node wrappers that only append NEW messages to parent state
@@ -87,7 +101,7 @@ def build_langgraph_agent():
         return {"messages": result["messages"][len(state["messages"]) :]}
 
     async def planner_node(state: AgentState):
-        system_msg = SystemMessage(content=PLANNER_PROMPT)
+        system_msg = SystemMessage(content=planner_p)
         # Planner doesn't need tools, just compiles the final itinerary
         response = await llm.ainvoke([system_msg] + list(state["messages"]))
         return {"messages": [response]}
@@ -108,7 +122,7 @@ def build_langgraph_agent():
 
 
 async def run_langgraph_agent(
-    chat_id: int,
+    chat_id: uuid.UUID,
     user_message: str,
     history: list[dict[str, Any]],
     db: AsyncSession,
@@ -118,7 +132,13 @@ async def run_langgraph_agent(
     Similar to run_langchain_agent but uses the state-machine graph structure.
     Saves the assistant ChatMessage and upserts ChatItinerary on completion.
     """
-    graph = build_langgraph_agent()
+
+    # Extract dynamic system prompt from history if present
+    dynamic_sys_prompt = ""
+    if history and history[0].get("role") == "system":
+        dynamic_sys_prompt = history.pop(0).get("content", "")
+
+    graph = build_langgraph_agent(dynamic_sys_prompt)
     chat_history = _messages_to_langchain(history)
 
     # Append the newest user message
