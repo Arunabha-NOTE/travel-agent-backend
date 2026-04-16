@@ -28,3 +28,6 @@ dist/
 # Local env files
 .env
 .env.*
+
+# logging
+logs/app.log

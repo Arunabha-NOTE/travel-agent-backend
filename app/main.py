@@ -11,6 +11,8 @@ from sqlalchemy import text
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chats import router as chats_router
+from app.api.v1.itinerary import router as itinerary_router
+from app.api.v1.messages import router as messages_router
 from app.api.v1.observability import router as observability_router
 from app.api.v1.users import router as users_router
 from app.core.config import settings
@@ -75,6 +77,8 @@ register_exception_handlers(app)
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(users_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chats_router, prefix=settings.API_V1_PREFIX)
+app.include_router(messages_router, prefix=settings.API_V1_PREFIX)
+app.include_router(itinerary_router, prefix=settings.API_V1_PREFIX)
 app.include_router(observability_router, prefix=settings.API_V1_PREFIX)
 
 

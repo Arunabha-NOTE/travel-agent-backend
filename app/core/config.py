@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     SQLALCHEMY_DATABASE_URI: str = (
         "postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot"
     )
+    # Sync URI for pgvector / LangChain (psycopg2)
+    SQLALCHEMY_SYNC_DATABASE_URI: str = (
+        "postgresql+psycopg2://chatbot:chatbot@localhost:5432/chatbot"
+    )
+
+    # === LLM Configuration (Minimax m2.7 via OpenAI-compat) ===
+    LLM_API_KEY: str = "changeme"
+    LLM_BASE_URL: str = "https://api.minimax.io/v1"
+    LLM_MODEL: str = "minimax-m2.7"
+
+    # === Firecrawl Configuration ===
+    FIRECRAWL_API_KEY: str = "changeme"
+
+    # === Vector Store Configuration ===
+    PGVECTOR_COLLECTION: str = "travel_knowledge"
 
     # === API Configuration ===
     API_V1_PREFIX: str = "/api/v1"
@@ -53,7 +68,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
 
-    # === Optional Vector DB Configuration ===
+    # === Optional Vector DB Configuration (legacy) ===
     VECTOR_DB_URL: str = "http://localhost:6333"
 
     model_config = SettingsConfigDict(
