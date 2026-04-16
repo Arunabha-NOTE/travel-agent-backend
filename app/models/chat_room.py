@@ -13,6 +13,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.chat_itinerary import ChatItinerary
     from app.models.chat_message import ChatMessage
+    from app.models.planning_session import PlanningSession
 
 
 class ChatRoom(Base):
@@ -52,6 +53,12 @@ class ChatRoom(Base):
         order_by="ChatMessage.created_at",
     )
     itinerary: Mapped["ChatItinerary | None"] = relationship(
+        back_populates="chat_room",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+    planning_session: Mapped["PlanningSession | None"] = relationship(
         back_populates="chat_room",
         cascade="all, delete-orphan",
         passive_deletes=True,

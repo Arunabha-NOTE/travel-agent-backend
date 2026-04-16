@@ -17,6 +17,7 @@ from app.core import ResourceNotFoundError, get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
 from app.models.chat_room import ChatRoom
 from app.models.chat_itinerary import ChatItinerary
+from app.models.planning_session import PlanningSession, PLANNING_STAGES
 from app.models.user import User
 
 logger = get_logger(__name__)
@@ -177,7 +178,7 @@ async def send_message(
         if m.sender_role in (MessageSenderRole.user, MessageSenderRole.assistant)
     ]
 
-    # Inject Context and Itinerary into the dynamic system prompt
+    # Inject itinerary, planning stage, and conversation summary into system context
     system_parts = []
     if chat and chat.context_summary:
         system_parts.append(
@@ -193,11 +194,55 @@ async def send_message(
 
         itinerary_str = json.dumps(itinerary.itinerary_data, indent=2)
         system_parts.append(
-            f"## Current Saved Itinerary (UPDATE and re-emit this with changes)\n"
-            f"```json\n{itinerary_str}\n```\n"
-            f"IMPORTANT: Always include the FULL updated itinerary in your response, "
-            f"even if only one thing changes. Never omit days that already exist."
+            f"## Current Itinerary (UPDATE and re-emit, preserving all confirmed fields)\n"
+            f"```json\n{itinerary_str}\n```"
         )
+
+    # Planning session — stage + preferences
+    planning_res = await db.execute(
+        select(PlanningSession).where(PlanningSession.chat_room_id == chat_id)
+    )
+    planning = planning_res.scalars().first()
+    current_stage = planning.stage if planning else "initial"
+
+    stage_index = (
+        PLANNING_STAGES.index(current_stage) if current_stage in PLANNING_STAGES else 0
+    )
+    stage_progress = " → ".join(
+        f"**[{s.upper()}]**" if s == current_stage else s for s in PLANNING_STAGES
+    )
+
+    pref_lines = []
+    if planning and planning.preferences:
+        p = planning.preferences
+        if p.get("origin"):
+            pref_lines.append(f"- Origin: {p['origin']}")
+        if p.get("destination"):
+            pref_lines.append(f"- Destination: {p['destination']}")
+        if p.get("people", {}).get("adults"):
+            adults = p["people"]["adults"]
+            children = p["people"].get("children", 0)
+            pref_lines.append(f"- Group: {adults} adults, {children} children")
+        if p.get("budget", {}).get("amount"):
+            b = p["budget"]
+            pref_lines.append(
+                f"- Budget: {b.get('currency', '')} {b['amount']} ({b.get('type', 'total')})"
+            )
+        if p.get("dates", {}).get("start"):
+            d = p["dates"]
+            pref_lines.append(f"- Dates: {d['start']} to {d.get('end', '?')}")
+        if p.get("flights", {}).get("selected"):
+            pref_lines.append(f"- Flight confirmed: {p['flights']['selected']}")
+        if p.get("hotels", {}).get("selected"):
+            pref_lines.append(f"- Hotel confirmed: {p['hotels']['selected']}")
+
+    planning_block = (
+        f"## Planning Progress: {stage_progress}\n"
+        f"**Current stage: {current_stage.upper()}**\n"
+    )
+    if pref_lines:
+        planning_block += "\n### Confirmed so far:\n" + "\n".join(pref_lines)
+    system_parts.append(planning_block)
 
     if system_parts:
         history.insert(
@@ -233,9 +278,12 @@ async def send_message(
                 )
 
             async for token in gen:
-                # Escape newlines inside token for SSE
-                safe_token = token.replace("\n", "\\n")
-                yield f"data: {safe_token}\n\n"
+                # [STEP:...] markers are passed as-is; other tokens escape newlines
+                if token.startswith("[STEP:"):
+                    yield f"data: {token}\n\n"
+                else:
+                    safe_token = token.replace("\n", "\\n")
+                    yield f"data: {safe_token}\n\n"
 
         except Exception as e:
             logger.exception("Stream error", error=str(e))
