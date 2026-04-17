@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class KBFallbackDoc:
+    """Structured KB fallback result with content and metadata."""
+
+    content: str
+    source: str
+    metadata: dict[str, Any]
 
 
 def persist_tool_result(
@@ -55,3 +65,32 @@ async def get_kb_fallback(query: str, k: int = 3) -> str:
     except Exception as e:
         logger.warning("KB fallback retrieval failed", error=str(e), query=query)
         return ""
+
+
+async def get_kb_fallback_docs(query: str, k: int = 3) -> list[KBFallbackDoc]:
+    """Fetch raw KB fallback documents with metadata for date-aware filtering."""
+    try:
+        from app.agents.rag.vector_store import get_retriever
+
+        retriever = get_retriever(k=k)
+        docs = await retriever.ainvoke(query)
+        if not docs:
+            return []
+
+        results: list[KBFallbackDoc] = []
+        for doc in docs:
+            content = (doc.page_content or "").strip()
+            if not content:
+                continue
+            metadata = dict(doc.metadata or {})
+            results.append(
+                KBFallbackDoc(
+                    content=content,
+                    source=str(metadata.get("source", "knowledge_base")),
+                    metadata=metadata,
+                )
+            )
+        return results
+    except Exception as e:
+        logger.warning("KB fallback doc retrieval failed", error=str(e), query=query)
+        return []

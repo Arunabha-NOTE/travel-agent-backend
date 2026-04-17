@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 
 from langchain_core.tools import tool
 
-from app.agents.tools.utils import get_kb_fallback, persist_tool_result
+from app.agents.tools.utils import (
+    get_kb_fallback,
+    get_kb_fallback_docs,
+    persist_tool_result,
+)
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -244,6 +249,66 @@ def _wants_live_data(query_text: str | None) -> bool:
         "exact fares",
     ]
     return any(keyword in q_lower for keyword in live_keywords)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _is_recent_cache_entry(
+    metadata: dict[str, object], *, max_age_days: int = 14
+) -> bool:
+    timestamp = _parse_iso_datetime(str(metadata.get("timestamp") or ""))
+    if not timestamp:
+        return False
+    age = datetime.now(timezone.utc) - timestamp
+    return age.days <= max_age_days
+
+
+def _matches_requested_date(
+    metadata: dict[str, object],
+    *,
+    requested_departure_date: str | None = None,
+    requested_check_in: str | None = None,
+    requested_check_out: str | None = None,
+) -> bool:
+    if requested_departure_date:
+        cached_departure = str(metadata.get("departure_date") or "")
+        if cached_departure and cached_departure != requested_departure_date:
+            return False
+    if requested_check_in:
+        cached_check_in = str(metadata.get("check_in") or "")
+        if cached_check_in and cached_check_in != requested_check_in:
+            return False
+    if requested_check_out:
+        cached_check_out = str(metadata.get("check_out") or "")
+        if cached_check_out and cached_check_out != requested_check_out:
+            return False
+    return True
+
+
+def _date_filter_message(
+    *,
+    requested_departure_date: str | None = None,
+    requested_check_in: str | None = None,
+    requested_check_out: str | None = None,
+) -> str:
+    if requested_departure_date:
+        return requested_departure_date
+    if requested_check_in or requested_check_out:
+        return (
+            f"{requested_check_in or 'unknown'} to {requested_check_out or 'unknown'}"
+        )
+    return "unknown"
 
 
 def _extract_price(text: str, fallback_currency: str) -> tuple[float | None, str]:
@@ -1095,8 +1160,18 @@ async def search_flights(
         )
         try:
             rag_query = f"flights {origin_code} to {dest_code} {departure_date} {cabin_class} {passengers} passengers {target_ccy}"
-            rag_data = await get_kb_fallback(rag_query, k=5)
-            if rag_data and "[search_error:" not in rag_data:
+            rag_docs = await get_kb_fallback_docs(rag_query, k=5)
+            filtered_docs = [
+                doc
+                for doc in rag_docs
+                if _matches_requested_date(
+                    doc.metadata,
+                    requested_departure_date=departure_date,
+                )
+                and _is_recent_cache_entry(doc.metadata, max_age_days=14)
+            ]
+            rag_data = "\n\n---\n\n".join(doc.content for doc in filtered_docs)
+            if rag_data:
                 flights = _normalize_flights(
                     rag_data,
                     fallback_currency=target_ccy,
@@ -1109,9 +1184,18 @@ async def search_flights(
                 if flights:
                     flights = _sanitize_flight_rows(flights, target_ccy)
                     logger.info(
-                        f"RAG database successful: found {len(flights)} cached flights - API CREDIT SAVED"
+                        f"RAG database successful: found {len(flights)} cached flights for {departure_date} - API CREDIT SAVED"
                     )
                     source_layer = "vector_kb"
+            elif rag_docs:
+                logger.debug(
+                    "Skipping flight cache because cached date or freshness did not match",
+                    requested_date=departure_date,
+                    cached_dates=[
+                        str(doc.metadata.get("departure_date") or "")
+                        for doc in rag_docs[:5]
+                    ],
+                )
         except Exception as e:
             logger.debug(f"RAG lookup failed: {str(e)}")
 
@@ -1620,8 +1704,19 @@ async def search_hotels(
                 f"hotels in {destination} check in {check_in} check out {check_out} "
                 f"guests {guests} stars {stars or 'any'} {brand_preference or ''} {target_ccy}"
             )
-            rag_raw = await get_kb_fallback(rag_query, k=5)
-            if rag_raw and "[search_error:" not in rag_raw:
+            rag_docs = await get_kb_fallback_docs(rag_query, k=5)
+            filtered_docs = [
+                doc
+                for doc in rag_docs
+                if _matches_requested_date(
+                    doc.metadata,
+                    requested_check_in=check_in,
+                    requested_check_out=check_out,
+                )
+                and _is_recent_cache_entry(doc.metadata, max_age_days=14)
+            ]
+            rag_raw = "\n\n---\n\n".join(doc.content for doc in filtered_docs)
+            if rag_raw:
                 hotels = _normalize_hotels(
                     rag_raw,
                     fallback_currency=target_ccy,
@@ -1630,9 +1725,21 @@ async def search_hotels(
                 )
                 if hotels:
                     logger.info(
-                        f"RAG database successful: found {len(hotels)} cached hotels - API CREDIT SAVED"
+                        f"RAG database successful: found {len(hotels)} cached hotels for {check_in} to {check_out} - API CREDIT SAVED"
                     )
                     source_layer = "vector_kb"
+            elif rag_docs:
+                logger.debug(
+                    "Skipping hotel cache because cached dates or freshness did not match",
+                    requested_dates=_date_filter_message(
+                        requested_check_in=check_in,
+                        requested_check_out=check_out,
+                    ),
+                    cached_dates=[
+                        f"{str(doc.metadata.get('check_in') or '')} to {str(doc.metadata.get('check_out') or '')}"
+                        for doc in rag_docs[:5]
+                    ],
+                )
         except Exception as e:
             logger.debug(f"RAG lookup failed: {str(e)}")
 
