@@ -1,8 +1,10 @@
 import asyncio
+import pytest
 from firecrawl.v1 import V1FirecrawlApp
 from app.core.config import settings
 
 
+@pytest.mark.asyncio
 async def test_firecrawl():
     print(f"Testing Firecrawl with API Key: {settings.FIRECRAWL_API_KEY[:5]}...")
     app = V1FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
