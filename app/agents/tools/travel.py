@@ -994,7 +994,7 @@ async def search_flights(
     except Exception as e:
         logger.warning(f"SERP API search failed: {str(e)}")
 
-    # TRY 2: Fall back to Firecrawl web search (if Amadeus didn't work)
+    # TRY 2: Fall back to Firecrawl web search (if SERP didn't work)
     # ==================================================================
     if not flights or source_layer == "no_live_data":
         logger.debug("Using Firecrawl-based flight extraction as fallback")
