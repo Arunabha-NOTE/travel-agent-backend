@@ -234,6 +234,14 @@ def _wants_live_data(query_text: str | None) -> bool:
         "just now",
         "up to date",
         "updated",
+        "exact price",
+        "exact prices",
+        "confirmed price",
+        "confirmed prices",
+        "live price",
+        "live prices",
+        "exact fare",
+        "exact fares",
     ]
     return any(keyword in q_lower for keyword in live_keywords)
 
@@ -1670,18 +1678,24 @@ async def search_hotels(
             else []
         )
 
-    # TRY 4: Fall back to model prior if nothing else worked
+    # TRY 4: Fall back to model prior only when exact pricing is not required
     # ==================================================================
     if not hotels or source_layer == "no_live_data":
-        logger.debug("Using model prior hotel generation as fallback")
-        source_layer = "model_prior"
-        hotels = _build_model_prior_hotels(
-            target_ccy,
-            destination,
-            guests,
-            brand_preference,
-            budget_per_night,
-        )
+        if force_live_data:
+            logger.debug(
+                "Skipping model prior hotel fallback because exact/live pricing was requested"
+            )
+            source_layer = "fallback_links"
+        else:
+            logger.debug("Using model prior hotel generation as fallback")
+            source_layer = "model_prior"
+            hotels = _build_model_prior_hotels(
+                target_ccy,
+                destination,
+                guests,
+                brand_preference,
+                budget_per_night,
+            )
 
     payload: dict[str, object] = {
         "query": {
