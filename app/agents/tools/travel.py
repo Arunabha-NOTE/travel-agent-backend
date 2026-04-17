@@ -917,6 +917,79 @@ def _search_serp_flights(
         return []
 
 
+def _search_serp_hotels(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    guests: int = 2,
+    currency: str = "USD",
+) -> list[dict[str, object]]:
+    """Search hotels via SERP API (Google Hotels scraping) and extract results."""
+    try:
+        import requests
+
+        api_key = getattr(settings, "SERP_API_KEY", None)
+        if not api_key:
+            logger.debug("SERP API key not configured for hotels")
+            return []
+
+        api_url = "https://api.serpapi.com/search"
+        params = {
+            "api_key": api_key,
+            "engine": "google_hotels",
+            "q": destination,
+            "check_in_date": check_in,
+            "check_out_date": check_out,
+            "adults": guests,
+            "currency": currency,
+        }
+
+        response = requests.get(api_url, params=params, timeout=15)
+        if response.status_code != 200:
+            logger.warning(f"SERP API (hotels) error: {response.status_code}")
+            return []
+
+        data = response.json()
+        hotel_results = data.get("properties", [])
+        hotels: list[dict[str, object]] = []
+
+        for hotel in hotel_results[:5]:  # Top 5 hotels
+            try:
+                price = hotel.get("price")
+                hotel_name = hotel.get("name", "Unknown")
+                rating = (
+                    hotel.get("review_snippets", [{}])[0].get("rating")
+                    if hotel.get("review_snippets")
+                    else None
+                )
+                area = hotel.get("address", "")
+                booking_link = hotel.get("link", "https://www.google.com/travel/hotels")
+
+                hotels.append(
+                    {
+                        "name": hotel_name,
+                        "price_per_night": float(price) if price else None,
+                        "currency": currency,
+                        "stars": float(rating) if rating else 3.5,
+                        "area": area if area else destination,
+                        "booking_link": booking_link,
+                        "confidence": 0.95,
+                        "source": "serp",
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"Error parsing SERP hotel: {str(e)}")
+                continue
+
+        if hotels:
+            logger.info(f"SERP API found {len(hotels)} hotels")
+        return hotels
+
+    except Exception as e:
+        logger.warning(f"SERP hotel search failed: {str(e)}")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Flight search
 # ---------------------------------------------------------------------------
@@ -933,17 +1006,18 @@ async def search_flights(
     currency: str | None = None,
     flight_number: str | None = None,
 ) -> str:
-    """Search for flights with SERP API and Firecrawl fallback.
+    """Search for flights with RAG-first strategy to save API credits.
 
-    ✅ REAL DATA: Uses SERP API for real-time Google Flights data
+    ✅ REAL DATA: Checks RAG database first, then SERP API for real-time Google Flights
 
     Strategy:
     1) Normalize cities to IATA codes
-    2) TRY 1: Query SERP API for live flight offers and prices
-    3) TRY 2: Fall back to Firecrawl web search if SERP fails
-    4) Extract and normalize flight rows if available
-    5) If no live data found, return helpful links to official booking sites
-    6) Never invent flight data - transparency > guessing
+    2) TRY 1: Check RAG/vector database for cached flight data (SAVES CREDITS)
+    3) TRY 2: If not found, query SERP API for live flight offers and prices
+    4) TRY 3: Fall back to Firecrawl web search if SERP fails
+    5) Extract and normalize flight rows if available
+    6) If no live data found, return helpful links to official booking sites
+    7) Never invent flight data - transparency > guessing
 
     Args:
         origin_city: Departure city (e.g. "Pune, India")
@@ -975,26 +1049,54 @@ async def search_flights(
     flights = []
     source_layer = "no_live_data"
 
-    # TRY 1: SERP API (real Google Flights data, most reliable)
-    # ========================================================
-    logger.debug("Attempting SERP API flight search")
+    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS)
+    # ==============================================================
+    logger.debug(
+        f"Attempting RAG lookup for flights {origin_code} -> {dest_code} on {departure_date}"
+    )
     try:
-        flights = _search_serp_flights(
-            origin=origin_code,
-            destination=dest_code,
-            departure_date=departure_date,
-            adults=passengers,
-            currency=target_ccy,
-        )
-        if flights:
-            logger.info(f"SERP API successful: found {len(flights)} flights")
-            source_layer = "serp_api"
-        else:
-            logger.debug("SERP API returned no results")
+        rag_query = f"flights {origin_code} to {dest_code} {departure_date} {cabin_class} {passengers} passengers {target_ccy}"
+        rag_data = await get_kb_fallback(rag_query, k=5)
+        if rag_data and "[search_error:" not in rag_data:
+            flights = _normalize_flights(
+                rag_data,
+                fallback_currency=target_ccy,
+                default_booking="https://www.google.com/travel/flights",
+                origin_city=origin_city,
+                destination_city=destination_city,
+                origin_code=origin_code,
+                destination_code=dest_code,
+            )
+            if flights:
+                flights = _sanitize_flight_rows(flights, target_ccy)
+                logger.info(
+                    f"RAG database successful: found {len(flights)} cached flights - API CREDIT SAVED"
+                )
+                source_layer = "vector_kb"
     except Exception as e:
-        logger.warning(f"SERP API search failed: {str(e)}")
+        logger.debug(f"RAG lookup failed: {str(e)}")
 
-    # TRY 2: Fall back to Firecrawl web search (if SERP didn't work)
+    # TRY 2: SERP API (real Google Flights data, if RAG had no results)
+    # ==================================================================
+    if not flights or source_layer == "no_live_data":
+        logger.debug("Attempting SERP API flight search")
+        try:
+            flights = _search_serp_flights(
+                origin=origin_code,
+                destination=dest_code,
+                departure_date=departure_date,
+                adults=passengers,
+                currency=target_ccy,
+            )
+            if flights:
+                logger.info(f"SERP API successful: found {len(flights)} flights")
+                source_layer = "serp_api"
+            else:
+                logger.debug("SERP API returned no results")
+        except Exception as e:
+            logger.warning(f"SERP API search failed: {str(e)}")
+
+    # TRY 3: Fall back to Firecrawl web search (if SERP didn't work)
     # ==================================================================
     if not flights or source_layer == "no_live_data":
         logger.debug("Using Firecrawl-based flight extraction as fallback")
@@ -1417,10 +1519,15 @@ async def search_hotels(
     budget_per_night: str | None = None,
     currency: str | None = None,
 ) -> str:
-    """Search for hotel options at a destination.
+    """Search for hotel options with RAG-first strategy to save API credits.
 
-    Returns 3-5 hotel options as a markdown comparison with pricing, ratings,
-    loyalty programs, location, and booking tips.
+    ✅ REAL DATA: Checks RAG database first, then SERP API for real-time Google Hotels
+
+    Strategy:
+    1) TRY 1: Check RAG/vector database for cached hotel data (SAVES CREDITS)
+    2) TRY 2: If not found, query SERP API for live hotel offers and prices
+    3) TRY 3: Fall back to web search if SERP fails
+    4) Returns 3-5 hotel options as a markdown comparison with pricing, ratings
 
     Args:
         destination: City and area (e.g. "Paris near Eiffel Tower")
@@ -1450,45 +1557,81 @@ async def search_hotels(
     loc = _get_locality(destination)
     target_ccy = (currency or loc["ccy"]).upper()
     fallback_booking = "https://www.google.com/travel/hotels"
+    hotels = []
+    source_layer = "no_live_data"
 
-    queries = [
-        f"site:google.com/travel/hotels hotels in {destination} {check_in} {check_out} {stars_q} {brand_q} {budget_q}",
-        f"site:booking.com hotels in {destination} {check_in} {check_out} {stars_q} {budget_q}",
-        f"site:agoda.com OR site:expedia.com hotels in {destination} {check_in} {check_out}",
-    ]
-
-    source_layer = "web_scrape"
-    raw = _firecrawl_search(queries, limit=4)
-    hotels = (
-        _normalize_hotels(
-            raw,
-            fallback_currency=target_ccy,
-            destination=destination,
-            default_booking=fallback_booking,
-        )
-        if raw and "[search_error:" not in raw
-        else []
+    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS)
+    # ==============================================================
+    logger.debug(
+        f"Attempting RAG lookup for hotels in {destination} {check_in} to {check_out}"
     )
-
-    if not hotels:
-        source_layer = "vector_kb"
-        kb_query = (
+    try:
+        rag_query = (
             f"hotels in {destination} check in {check_in} check out {check_out} "
-            f"guests {guests} stars {stars or 'any'} {brand_preference or ''}"
+            f"guests {guests} stars {stars or 'any'} {brand_preference or ''} {target_ccy}"
         )
-        kb_raw = await get_kb_fallback(kb_query, k=4)
-        hotels = (
-            _normalize_hotels(
-                kb_raw,
+        rag_raw = await get_kb_fallback(rag_query, k=5)
+        if rag_raw and "[search_error:" not in rag_raw:
+            hotels = _normalize_hotels(
+                rag_raw,
                 fallback_currency=target_ccy,
                 destination=destination,
                 default_booking=fallback_booking,
             )
-            if kb_raw
+            if hotels:
+                logger.info(
+                    f"RAG database successful: found {len(hotels)} cached hotels - API CREDIT SAVED"
+                )
+                source_layer = "vector_kb"
+    except Exception as e:
+        logger.debug(f"RAG lookup failed: {str(e)}")
+
+    # TRY 2: SERP API (real Google Hotels data, if RAG had no results)
+    # ==================================================================
+    if not hotels or source_layer == "no_live_data":
+        logger.debug("Attempting SERP API hotel search")
+        try:
+            hotels = _search_serp_hotels(
+                destination=destination,
+                check_in=check_in,
+                check_out=check_out,
+                guests=guests,
+                currency=target_ccy,
+            )
+            if hotels:
+                logger.info(f"SERP API successful: found {len(hotels)} hotels")
+                source_layer = "serp_api"
+            else:
+                logger.debug("SERP API returned no results")
+        except Exception as e:
+            logger.warning(f"SERP API hotel search failed: {str(e)}")
+
+    # TRY 3: Fall back to web scraping if SERP didn't work
+    # ==================================================================
+    if not hotels or source_layer == "no_live_data":
+        logger.debug("Using Firecrawl-based hotel extraction as fallback")
+        queries = [
+            f"site:google.com/travel/hotels hotels in {destination} {check_in} {check_out} {stars_q} {brand_q} {budget_q}",
+            f"site:booking.com hotels in {destination} {check_in} {check_out} {stars_q} {budget_q}",
+            f"site:agoda.com OR site:expedia.com hotels in {destination} {check_in} {check_out}",
+        ]
+        source_layer = "web_scrape"
+        raw = _firecrawl_search(queries, limit=4)
+        hotels = (
+            _normalize_hotels(
+                raw,
+                fallback_currency=target_ccy,
+                destination=destination,
+                default_booking=fallback_booking,
+            )
+            if raw and "[search_error:" not in raw
             else []
         )
 
-    if not hotels:
+    # TRY 4: Fall back to model prior if nothing else worked
+    # ==================================================================
+    if not hotels or source_layer == "no_live_data":
+        logger.debug("Using model prior hotel generation as fallback")
         source_layer = "model_prior"
         hotels = _build_model_prior_hotels(
             target_ccy,

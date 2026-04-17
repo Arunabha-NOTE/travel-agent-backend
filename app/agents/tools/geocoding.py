@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import httpx
 from langchain_core.tools import tool
 
-from app.agents.tools.utils import persist_tool_result
+from app.agents.tools.utils import get_kb_fallback, persist_tool_result
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -19,9 +20,13 @@ _api_lock = asyncio.Lock()
 
 @tool
 async def geocode_place(place_name: str) -> str:
-    """Geocode a place name to latitude/longitude using Google Maps.
+    """Geocode a place name to latitude/longitude with RAG-first strategy to save API credits.
 
-    This tool also persists the found location data into the knowledge base.
+    Strategy:
+    1) Check RAG/vector database for cached geocoding results (SAVES API CREDITS)
+    2) If not found, use Google Maps API
+    3) Fall back to Nominatim (OSM) if Google Maps fails
+    4) Persists location data to knowledge base for future reuse
 
     Args:
         place_name: The name of the place to geocode (e.g. "Kyoto, Japan").
@@ -29,10 +34,41 @@ async def geocode_place(place_name: str) -> str:
     Returns:
         JSON-like string with lat, lon, display_name, and country.
     """
-    # Check cache first (simplified in-memory cache handled by @lru_cache)
-    # Note: We don't use lru_cache directly on the async tool, but we could implement a dict cache.
-
     logger.info("Geocode requested", place_name=place_name)
+
+    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS)
+    # ==============================================================
+    logger.debug(f"Attempting RAG lookup for geocoding: {place_name}")
+    try:
+        rag_query = f"geocode location {place_name} latitude longitude country"
+        rag_data = await get_kb_fallback(rag_query, k=2)
+        if rag_data and "[search_error:" not in rag_data:
+            # Try to extract structured data from RAG results
+            lat_match = re.search(
+                r"lat[itude]*[:\s]+(-?\d+\.?\d*)", rag_data, re.IGNORECASE
+            )
+            lon_match = re.search(
+                r"lon[gitude]*[:\s]+(-?\d+\.?\d*)", rag_data, re.IGNORECASE
+            )
+            if lat_match and lon_match:
+                lat = float(lat_match.group(1))
+                lon = float(lon_match.group(1))
+                country_match = re.search(
+                    r"country[:\s]+([^\n,]+)", rag_data, re.IGNORECASE
+                )
+                country = country_match.group(1).strip() if country_match else "Unknown"
+                display = place_name
+                logger.info(
+                    f"RAG geocoding successful for {place_name} - API CREDIT SAVED"
+                )
+                return _format_geocode_result(
+                    place_name, display, lat, lon, country, "vector_kb"
+                )
+    except Exception as e:
+        logger.debug(f"RAG geocoding lookup failed: {str(e)}")
+
+    # TRY 2: Google Maps API (if RAG had no results)
+    # ================================================
     url = "https://maps.googleapis.com/maps/api/geocode/json"
     params = {
         "address": place_name,
@@ -42,7 +78,7 @@ async def geocode_place(place_name: str) -> str:
     try:
         async with _api_lock:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # 1. ATTEMPT GOOGLE MAPS
+                # TRY 2: ATTEMPT GOOGLE MAPS
                 try:
                     resp = await client.get(url, params=params)
                     resp.raise_for_status()
@@ -60,7 +96,7 @@ async def geocode_place(place_name: str) -> str:
                                 country = comp.get("long_name", "Unknown")
                                 break
                         logger.info(
-                            "Geocode resolved with Google Maps",
+                            "Geocode resolved with Google Maps (TRY 2)",
                             place_name=place_name,
                             provider="google_maps",
                             result_count=len(results),
@@ -82,7 +118,7 @@ async def geocode_place(place_name: str) -> str:
                         error=str(g_err),
                     )
 
-                # 2. FALLBACK TO NOMINATIM (OSM)
+                # TRY 3: FALLBACK TO NOMINATIM (OSM)
                 logger.info("Attempting Nominatim fallback", place_name=place_name)
                 osm_url = "https://nominatim.openstreetmap.org/search"
                 osm_params = {"q": place_name, "format": "json", "limit": 1}
@@ -100,7 +136,7 @@ async def geocode_place(place_name: str) -> str:
                     # Extract country (crude check)
                     country = display.split(",")[-1].strip()
                     logger.info(
-                        "Geocode resolved with Nominatim fallback",
+                        "Geocode resolved with Nominatim fallback (TRY 3)",
                         place_name=place_name,
                         provider="nominatim",
                         country=country,
