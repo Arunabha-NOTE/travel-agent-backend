@@ -126,7 +126,7 @@
 
 | Category | Passed | Failed | Total | Status |
 |----------|--------|--------|-------|--------|
-| 1. Flights | __ | __ | 3 | [ ] 🟢 GO [ ] 🔴 STOP |
+| 1. Flights | 0 | 1 | 3 | [ ] 🔴 STOP |
 | 2. Hotels | __ | __ | 2 | [ ] 🟢 GO [ ] 🔴 STOP |
 | 3. Transport | __ | __ | 2 | [ ] 🟢 GO [ ] 🔴 STOP |
 | 4. Attractions | __ | __ | 2 | [ ] 🟢 GO [ ] 🔴 STOP |
@@ -143,15 +143,19 @@
 
 ## Issue Log
 
-### Issue #1: [Brief Title]
-- **Category:** [1-8]
-- **Test:** [Test Number]
-- **Severity:** [ ] CRITICAL [ ] HIGH [ ] MEDIUM [ ] LOW
-- **Expected:** _______
-- **Actual:** _______
-- **Root Cause:** _______
-- **Fix Applied:** _______
-- **Status:** [ ] OPEN [ ] IN PROGRESS [ ] RESOLVED
+### Issue #1: Flight Search Returns Inaccurate Data
+- **Category:** 1 (Flights)
+- **Test:** 1.1 (Domestic Flights Pune→Delhi)
+- **Severity:** [ ] CRITICAL [x] HIGH [ ] MEDIUM [ ] LOW
+- **Expected:** Real-time accurate flight data matching Google Flights
+- **Actual:** Inaccurate scraped data with wrong prices, unrealistic durations, "Unknown Carrier"
+- **Root Cause:** Tool uses web scraping (Firecrawl) instead of real flight APIs. Cannot access dynamic JavaScript content from Google Flights/Skyscanner. Only finds cached data on MakeMyTrip.
+- **Fix Applied:** N/A - Requires architecture change
+- **Recommendation:** 
+  1. Replace web scraping with flight API integration (Amadeus, Sabre, Kiwi.com, or Skyscanner API)
+  2. For MVP: Return mock realistic data or "Unable to fetch real-time data" message
+  3. Fallback: Link to Google Flights search URL instead of displaying data
+- **Status:** [ ] OPEN [x] IN PROGRESS [ ] RESOLVED
 
 ---
 
@@ -204,22 +208,34 @@ What are the available flight options and prices?
 
 **Agent Response:**
 ```
-[PASTE FULL AGENT RESPONSE HERE]
+✈️ Flight Options (1 Adult, Economy)
+#1: Air India, 07:05→14:10, 13h 30m, ₹11,205
+#2: IndiGo, 17:40→01:25, 6h 10m, ₹18,592
+#3: Unknown Carrier, —, —, ₹26,165
 ```
 
 **Manual Verification (Google Flights - Pune→Delhi May 15, 2026):**
-- Airline 1: _________ Price: _________ Time: _________
-- Airline 2: _________ Price: _________ Time: _________
-- Airline 3: _________ Price: _________ Time: _________
+✅ Verified real flight data available on Google Flights
+- Multiple real airlines with different price points
+- Accurate 2-hour flight times shown
+- Current market pricing for economy class
 
 **Comparison:**
-- [ ] Prices match within 10%
-- [ ] Airlines are real and correct
-- [ ] Times are accurate
-- [ ] Additional info (stops, duration) correct
+- [x] Prices do NOT match - Agent data is inaccurate
+- [x] Airlines partially correct but incomplete data
+- [x] Times are NOT accurate - showing 6-13+ hours for 2-hour route (likely including layovers)
+- [x] Missing critical info - No actual booking links or complete flight details
 
-**Result:** [ ] PASS [ ] FAIL  
-**Notes:** 
+**Root Cause:**
+Tool uses **web scraping via Firecrawl** instead of real flight APIs:
+- Cannot access real-time dynamic flight data
+- Scrapes incomplete/cached data from MakeMyTrip only (logs show 0 results on Google Flights, Skyscanner, Kayak)
+- Returns "fallback" results with unreliable pricing
+- Marked as "non-ideal result" in logs
+
+**Result:** [x] FAIL  
+**Critical Issue:** Tool architecture needs real flight API instead of web scraping
+**Recommendation:** Integrate Amadeus/Sabre/Skyscanner/Kiwi.com APIs for accurate data 
 
 ---
 
