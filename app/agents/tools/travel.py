@@ -840,13 +840,21 @@ async def search_flights(
     currency: str | None = None,
     flight_number: str | None = None,
 ) -> str:
-    """Search for flights with a normalized output schema.
+    """Search for flights with web scraping and provide booking guidance.
+
+    ⚠️ LIMITATION: This tool uses web scraping and CANNOT access real-time flight APIs.
+    For accurate current pricing, the tool will provide direct links to:
+    - Google Flights (real-time data)
+    - Skyscanner (real-time data)
+    - Official airline websites
+    - Local booking sites (MakeMyTrip for India)
 
     Strategy:
     1) Normalize cities to IATA codes
-    2) Use targeted web queries (structured-like sources)
-    3) Extract and normalize flight rows
-    4) If live extraction fails, return explicit no-live-data status (no invented schedules)
+    2) Try targeted web queries (structured sources, India sites)
+    3) Extract and normalize flight rows if available
+    4) If no live data found, return helpful links to real-time sources
+    5) Never invent flight data - transparency > guessing
 
     Args:
         origin_city: Departure city (e.g. "Pune, India")
@@ -906,6 +914,8 @@ async def search_flights(
         flights = _sanitize_flight_rows(flights, target_ccy)
     else:
         source_layer = "no_live_data"
+        # When no live data is available, provide helpful guidance instead
+        flights = []
 
     payload: dict[str, object] = {
         "query": {
@@ -926,15 +936,36 @@ async def search_flights(
             "allow_exact_schedules": source_layer == "web_scrape",
             "requires_user_verification": source_layer != "web_scrape",
         },
+        "data_quality": {
+            "is_live_data": source_layer == "web_scrape",
+            "is_real_time": False,
+            "timestamp": None,
+        },
         "notes": [
-            "Prices/times may change quickly; verify on booking site before purchase.",
-            "Confidence reflects extraction certainty from available evidence.",
-            "If no live rows are returned, do not invent flight numbers, exact times, or fares.",
+            "⚠️ Live flight data unavailable - tool uses web scraping which cannot access real-time APIs.",
+            "✅ SOLUTION: Check these official sources for accurate current pricing and availability:",
+            "📌 RECOMMENDED SITES (Real-time data):",
+            "  1. Google Flights: https://www.google.com/travel/flights",
+            "  2. Skyscanner: https://www.skyscanner.com",
+            "  3. Kayak: https://www.kayak.com",
+            "  4. Airline Direct (fastest booking):",
+            "     - Air India: https://www.airindia.com",
+            "     - IndiGo: https://www.goindigo.in",
+            "     - SpiceJet: https://www.spicejet.com",
+            "     - Vistara: https://www.vistara.com",
+            "📱 LOCAL BOOKING APPS:",
+            "  - MakeMyTrip (India): https://www.makemytrip.com",
+            "  - OneMyTrip (India): https://www.onemytrip.com",
+            "",
+            "💡 TIP: Use 'Flexible dates' on Google Flights to see cheapest days near your date.",
+            "💡 TIP: Flight prices typically drop on Tuesdays/Wednesdays, peak on weekends.",
         ],
         "recommended_live_sources": [
-            "https://www.google.com/flights",
-            "https://www.airindia.com",
+            "https://www.google.com/travel/flights",
             "https://www.skyscanner.com",
+            "https://www.kayak.com",
+            "https://www.goindigo.in" if origin_code and dest_code else None,
+            "https://www.airindia.com" if origin_code and dest_code else None,
         ],
     }
 
