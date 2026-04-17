@@ -122,7 +122,10 @@ def _firecrawl_search(queries: list[str], limit: int = 3) -> str:
                 q, scrape_options=V1ScrapeOptions(formats=["markdown"]), limit=limit
             )
             # Result data can be a list of objects or dicts
-            data_list = getattr(result, "data", []) or result.get("data", [])
+            if isinstance(result, dict):
+                data_list = result.get("data", [])
+            else:
+                data_list = getattr(result, "data", []) or []
             logger.info(
                 "Travel tool search query completed",
                 query=q,
