@@ -217,6 +217,27 @@ def _pick_airline(text: str) -> str:
     return "Unknown"
 
 
+def _wants_live_data(query_text: str | None) -> bool:
+    """Detect if user explicitly asks for latest/current/real-time data."""
+    if not query_text:
+        return False
+    q_lower = query_text.lower()
+    live_keywords = [
+        "latest",
+        "current",
+        "now",
+        "real-time",
+        "real time",
+        "right now",
+        "today",
+        "this minute",
+        "just now",
+        "up to date",
+        "updated",
+    ]
+    return any(keyword in q_lower for keyword in live_keywords)
+
+
 def _extract_price(text: str, fallback_currency: str) -> tuple[float | None, str]:
     patterns = [
         r"(INR|USD|EUR|GBP)\s*([0-9][0-9,]{2,})",
@@ -1005,19 +1026,21 @@ async def search_flights(
     passengers: int = 1,
     currency: str | None = None,
     flight_number: str | None = None,
+    force_live_data: bool = False,
 ) -> str:
-    """Search for flights with RAG-first strategy to save API credits.
+    """Search for flights with smart RAG/API strategy to save credits while honoring user intent.
 
-    ✅ REAL DATA: Checks RAG database first, then SERP API for real-time Google Flights
+    ✅ REAL DATA: Smart caching - checks RAG first UNLESS user asks for latest data
 
     Strategy:
     1) Normalize cities to IATA codes
-    2) TRY 1: Check RAG/vector database for cached flight data (SAVES CREDITS)
-    3) TRY 2: If not found, query SERP API for live flight offers and prices
-    4) TRY 3: Fall back to Firecrawl web search if SERP fails
-    5) Extract and normalize flight rows if available
-    6) If no live data found, return helpful links to official booking sites
-    7) Never invent flight data - transparency > guessing
+    2) Check if user wants "latest/current/real-time" data → skip cache if yes
+    3) TRY 1: Check RAG/vector database for cached flight data (SAVES CREDITS) *unless force_live_data=True*
+    4) TRY 2: If not found or force_live_data=True, query SERP API for live flight offers and prices
+    5) TRY 3: Fall back to Firecrawl web search if SERP fails
+    6) Extract and normalize flight rows if available
+    7) If no live data found, return helpful links to official booking sites
+    8) Never invent flight data - transparency > guessing
 
     Args:
         origin_city: Departure city (e.g. "Pune, India")
@@ -1028,6 +1051,7 @@ async def search_flights(
         passengers: Number of passengers
         currency: Preferred currency for results (e.g. "INR", "USD", "EUR")
         flight_number: Specific flight number to research (e.g. "6E 2045")
+        force_live_data: If True or user asks for "latest", skip cache and query live API
     """
     logger.info(
         "Flight search requested",
@@ -1049,32 +1073,39 @@ async def search_flights(
     flights = []
     source_layer = "no_live_data"
 
-    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS)
-    # ==============================================================
-    logger.debug(
-        f"Attempting RAG lookup for flights {origin_code} -> {dest_code} on {departure_date}"
-    )
-    try:
-        rag_query = f"flights {origin_code} to {dest_code} {departure_date} {cabin_class} {passengers} passengers {target_ccy}"
-        rag_data = await get_kb_fallback(rag_query, k=5)
-        if rag_data and "[search_error:" not in rag_data:
-            flights = _normalize_flights(
-                rag_data,
-                fallback_currency=target_ccy,
-                default_booking="https://www.google.com/travel/flights",
-                origin_city=origin_city,
-                destination_city=destination_city,
-                origin_code=origin_code,
-                destination_code=dest_code,
-            )
-            if flights:
-                flights = _sanitize_flight_rows(flights, target_ccy)
-                logger.info(
-                    f"RAG database successful: found {len(flights)} cached flights - API CREDIT SAVED"
+    # Check if user explicitly wants live data
+    skip_cache = force_live_data or _wants_live_data(flight_number or origin_city)
+
+    if skip_cache:
+        logger.info("User requested live data - skipping cache to query API")
+
+    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS) - unless user wants live data
+    # ==============================================================================
+    if not skip_cache:
+        logger.debug(
+            f"Attempting RAG lookup for flights {origin_code} -> {dest_code} on {departure_date}"
+        )
+        try:
+            rag_query = f"flights {origin_code} to {dest_code} {departure_date} {cabin_class} {passengers} passengers {target_ccy}"
+            rag_data = await get_kb_fallback(rag_query, k=5)
+            if rag_data and "[search_error:" not in rag_data:
+                flights = _normalize_flights(
+                    rag_data,
+                    fallback_currency=target_ccy,
+                    default_booking="https://www.google.com/travel/flights",
+                    origin_city=origin_city,
+                    destination_city=destination_city,
+                    origin_code=origin_code,
+                    destination_code=dest_code,
                 )
-                source_layer = "vector_kb"
-    except Exception as e:
-        logger.debug(f"RAG lookup failed: {str(e)}")
+                if flights:
+                    flights = _sanitize_flight_rows(flights, target_ccy)
+                    logger.info(
+                        f"RAG database successful: found {len(flights)} cached flights - API CREDIT SAVED"
+                    )
+                    source_layer = "vector_kb"
+        except Exception as e:
+            logger.debug(f"RAG lookup failed: {str(e)}")
 
     # TRY 2: SERP API (real Google Flights data, if RAG had no results)
     # ==================================================================
@@ -1518,16 +1549,19 @@ async def search_hotels(
     brand_preference: str | None = None,
     budget_per_night: str | None = None,
     currency: str | None = None,
+    force_live_data: bool = False,
 ) -> str:
-    """Search for hotel options with RAG-first strategy to save API credits.
+    """Search for hotels with smart RAG/API strategy to save credits while honoring user intent.
 
-    ✅ REAL DATA: Checks RAG database first, then SERP API for real-time Google Hotels
+    ✅ REAL DATA: Smart caching - checks RAG first UNLESS user asks for latest data
 
     Strategy:
-    1) TRY 1: Check RAG/vector database for cached hotel data (SAVES CREDITS)
-    2) TRY 2: If not found, query SERP API for live hotel offers and prices
-    3) TRY 3: Fall back to web search if SERP fails
-    4) Returns 3-5 hotel options as a markdown comparison with pricing, ratings
+    1) Check if user wants "latest/current/real-time" data → skip cache if yes
+    2) TRY 1: Check RAG/vector database for cached hotel data (SAVES CREDITS) *unless force_live_data=True*
+    3) TRY 2: If not found or force_live_data=True, query SERP API for live hotel offers and prices
+    4) TRY 3: Fall back to web search if SERP fails
+    5) TRY 4: Model prior fallback
+    6) Returns 3-5 hotel options as a markdown comparison with pricing, ratings
 
     Args:
         destination: City and area (e.g. "Paris near Eiffel Tower")
@@ -1538,6 +1572,7 @@ async def search_hotels(
         brand_preference: Chain preference (e.g. "Radisson", "Marriott", "IHG")
         budget_per_night: Budget range (e.g. "100-150")
         currency: Preferred currency for results (e.g. "INR", "USD")
+        force_live_data: If True or user asks for "latest", skip cache and query live API
     """
     logger.info(
         "Hotel search requested",
@@ -1560,33 +1595,40 @@ async def search_hotels(
     hotels = []
     source_layer = "no_live_data"
 
-    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS)
-    # ==============================================================
-    logger.debug(
-        f"Attempting RAG lookup for hotels in {destination} {check_in} to {check_out}"
-    )
-    try:
-        rag_query = (
-            f"hotels in {destination} check in {check_in} check out {check_out} "
-            f"guests {guests} stars {stars or 'any'} {brand_preference or ''} {target_ccy}"
-        )
-        rag_raw = await get_kb_fallback(rag_query, k=5)
-        if rag_raw and "[search_error:" not in rag_raw:
-            hotels = _normalize_hotels(
-                rag_raw,
-                fallback_currency=target_ccy,
-                destination=destination,
-                default_booking=fallback_booking,
-            )
-            if hotels:
-                logger.info(
-                    f"RAG database successful: found {len(hotels)} cached hotels - API CREDIT SAVED"
-                )
-                source_layer = "vector_kb"
-    except Exception as e:
-        logger.debug(f"RAG lookup failed: {str(e)}")
+    # Check if user explicitly wants live data
+    skip_cache = force_live_data or _wants_live_data(destination or brand_preference)
 
-    # TRY 2: SERP API (real Google Hotels data, if RAG had no results)
+    if skip_cache:
+        logger.info("User requested live data - skipping cache to query API")
+
+    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS) - unless user wants live data
+    # ==============================================================================
+    if not skip_cache:
+        logger.debug(
+            f"Attempting RAG lookup for hotels in {destination} {check_in} to {check_out}"
+        )
+        try:
+            rag_query = (
+                f"hotels in {destination} check in {check_in} check out {check_out} "
+                f"guests {guests} stars {stars or 'any'} {brand_preference or ''} {target_ccy}"
+            )
+            rag_raw = await get_kb_fallback(rag_query, k=5)
+            if rag_raw and "[search_error:" not in rag_raw:
+                hotels = _normalize_hotels(
+                    rag_raw,
+                    fallback_currency=target_ccy,
+                    destination=destination,
+                    default_booking=fallback_booking,
+                )
+                if hotels:
+                    logger.info(
+                        f"RAG database successful: found {len(hotels)} cached hotels - API CREDIT SAVED"
+                    )
+                    source_layer = "vector_kb"
+        except Exception as e:
+            logger.debug(f"RAG lookup failed: {str(e)}")
+
+    # TRY 2: SERP API (real Google Hotels data, if RAG had no results or user wants live data)
     # ==================================================================
     if not hotels or source_layer == "no_live_data":
         logger.debug("Attempting SERP API hotel search")
