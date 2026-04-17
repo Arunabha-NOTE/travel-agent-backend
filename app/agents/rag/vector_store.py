@@ -42,3 +42,14 @@ def get_retriever(k: int = 4):
         search_type="similarity",
         search_kwargs={"k": k},
     )
+
+
+def add_to_knowledge_base(text: str, metadata: dict | None = None):
+    """Add a piece of text to the travel knowledge base vector store.
+
+    Args:
+        text: The content to store
+        metadata: Optional metadata (e.g. source, chat_id, timestamp)
+    """
+    store = get_vector_store()
+    store.add_texts(texts=[text], metadatas=[metadata or {}])

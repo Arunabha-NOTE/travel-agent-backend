@@ -65,6 +65,8 @@ async def get_current_user_profile(
             "is_active": current_user.is_active,
             "is_superuser": current_user.is_superuser,
             "token_usage_millions": current_user.token_usage_millions,
+            "total_tokens": current_user.total_tokens,
+            "total_cost": current_user.total_cost,
         }
 
 

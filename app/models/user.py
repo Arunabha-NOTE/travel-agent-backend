@@ -30,6 +30,8 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(default=True, index=True)
     is_superuser: Mapped[bool] = mapped_column(default=False)
     token_usage_millions: Mapped[float] = mapped_column(Float, default=0.0)
+    total_tokens: Mapped[int] = mapped_column(default=0)
+    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

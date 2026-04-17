@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # === Firecrawl Configuration ===
     FIRECRAWL_API_KEY: str = "changeme"
 
+    # === Google Maps Configuration ===
+    GOOGLE_MAPS_API_KEY: str = "changeme"
+
     # === Vector Store Configuration ===
     PGVECTOR_COLLECTION: str = "travel_knowledge"
 

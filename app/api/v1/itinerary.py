@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -42,6 +43,13 @@ async def get_itinerary(
 
     Returns 404 if no itinerary has been generated yet for this chat.
     """
+    started_at = perf_counter()
+    logger.info(
+        "Itinerary fetch started",
+        chat_id=chat_id,
+        user_id=current_user.id,
+    )
+
     # Verify chat ownership
     chat_result = await db.execute(
         select(ChatRoom).where(
@@ -53,6 +61,13 @@ async def get_itinerary(
         )
     )
     if not chat_result.scalars().first():
+        elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
+        logger.warning(
+            "Itinerary fetch chat not found",
+            chat_id=chat_id,
+            user_id=current_user.id,
+            elapsed_ms=elapsed_ms,
+        )
         raise ResourceNotFoundError(resource="ChatRoom", resource_id=chat_id)
 
     # Fetch itinerary
@@ -62,7 +77,45 @@ async def get_itinerary(
     itinerary = result.scalars().first()
 
     if itinerary is None:
+        elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
+        logger.info(
+            "Itinerary fetch empty",
+            chat_id=chat_id,
+            user_id=current_user.id,
+            elapsed_ms=elapsed_ms,
+        )
         raise ResourceNotFoundError(resource="ChatItinerary", resource_id=chat_id)
+
+    itinerary_days = 0
+    itinerary_activities = 0
+    if isinstance(itinerary.itinerary_data, dict):
+        raw_days = itinerary.itinerary_data.get("days")
+        if isinstance(raw_days, list):
+            itinerary_days = len([day for day in raw_days if isinstance(day, dict)])
+            for day in raw_days:
+                if not isinstance(day, dict):
+                    continue
+                activities = day.get("activities")
+                if isinstance(activities, list):
+                    itinerary_activities += len(
+                        [
+                            activity
+                            for activity in activities
+                            if isinstance(activity, dict)
+                        ]
+                    )
+
+    elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "Itinerary fetch completed",
+        chat_id=chat_id,
+        user_id=current_user.id,
+        itinerary_id=itinerary.id,
+        days=itinerary_days,
+        activities=itinerary_activities,
+        updated_at=str(itinerary.updated_at),
+        elapsed_ms=elapsed_ms,
+    )
 
     return ItineraryResponse(
         id=itinerary.id,

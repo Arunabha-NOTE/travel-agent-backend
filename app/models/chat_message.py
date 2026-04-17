@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Text, func
 import uuid
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -53,6 +53,9 @@ class ChatMessage(Base):
         index=True,
     )
     content: Mapped[str] = mapped_column(Text)
+    prompt_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    total_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
     message_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata",
         JSONB,

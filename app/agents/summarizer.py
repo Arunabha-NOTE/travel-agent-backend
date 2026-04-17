@@ -1,6 +1,5 @@
 import uuid
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
@@ -56,12 +55,13 @@ async def _summarize_with_minimax(
         return None
 
 
-async def check_and_summarize(chat_id: uuid.UUID, db: AsyncSession):
+async def check_and_summarize(chat_id: uuid.UUID):
     """
     Background worker that checks if the chat has > 10 unsummarized messages.
     If so, it generates a new summary and updates the ChatRoom.
     """
     try:
+        logger.info("Summarizer check started", chat_id=str(chat_id))
         # We need a new isolated session to commit bg tasks safely without interfering with the ongoing request.
         from app.db.session import async_session_maker
 
@@ -108,6 +108,12 @@ async def check_and_summarize(chat_id: uuid.UUID, db: AsyncSession):
                         chat_id=str(chat_id),
                         msg_count=len(target_msgs),
                     )
+            else:
+                logger.info(
+                    "Summarizer skipped",
+                    chat_id=str(chat_id),
+                    unsummarized_count=len(unsummarized_msgs),
+                )
 
     except Exception as e:
         logger.warning(f"Error in background summarizer: {str(e)}")

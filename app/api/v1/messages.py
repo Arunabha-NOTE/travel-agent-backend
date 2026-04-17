@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from time import perf_counter
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -107,6 +108,15 @@ async def send_message(
     Ends with:
       `data: [DONE]\\n\\n`
     """
+    request_started_at = perf_counter()
+    logger.info(
+        "Send message request started",
+        chat_id=chat_id,
+        user_id=current_user.id,
+        agent=payload.agent,
+        message_chars=len(payload.content),
+    )
+
     await _get_owned_chat_or_404(db=db, chat_id=chat_id, user_id=current_user.id)
 
     # Save user message
@@ -135,17 +145,42 @@ async def send_message(
     )
     history_msgs = list(reversed(history_result.scalars().all()))
 
-    # Auto-title: if this was the FIRST message (only 1 msg in history now),
+    # Auto-title: if this was the FIRST message or we have a leaked/default title,
     # fire a background task to generate and save a descriptive title.
-    is_first_message = len(history_msgs) == 1
-    if is_first_message and chat and chat.title.lower() in ("new chat", ""):
+    # history_msgs includes the user's message we just added.
+    is_early_stage = len(history_msgs) <= 4  # Allow retry on first 2 exchanges
+    title_is_default = chat.title.lower() in ("new chat", "", "new conversation")
+    leaked_markers = ["the user", "asking for", "summarize", "title for", "generate a"]
+    title_is_leaked = any(p in chat.title.lower() for p in leaked_markers)
+
+    if (is_early_stage and chat) and (title_is_default or title_is_leaked):
+        logger.info(
+            "Auto-title scheduled",
+            chat_id=chat_id,
+            user_id=current_user.id,
+            is_early_stage=is_early_stage,
+            title_is_default=title_is_default,
+            title_is_leaked=title_is_leaked,
+        )
 
         async def _auto_title() -> None:
             try:
                 from app.agents.titler import generate_chat_title
                 from app.db.session import async_session_maker
 
-                title = await generate_chat_title(payload.content)
+                # Prepare context for the titler
+                context = []
+                for msg in history_msgs:
+                    context.append(
+                        {
+                            "role": msg.sender_role.value
+                            if hasattr(msg.sender_role, "value")
+                            else str(msg.sender_role),
+                            "content": msg.content,
+                        }
+                    )
+
+                title = await generate_chat_title(context)
                 if title:
                     async with async_session_maker() as title_db:
                         result = await title_db.execute(
@@ -154,22 +189,27 @@ async def send_message(
                         room = result.scalars().first()
                         if room:
                             room.title = title
-                            room.updated_at = datetime.now(timezone.utc)
                             await title_db.commit()
                             logger.info(
-                                "Chat title auto-updated",
+                                "Auto-title committed",
                                 chat_id=chat_id,
+                                user_id=current_user.id,
                                 title=title,
                             )
-            except Exception as exc:
-                logger.warning("Auto-title background task failed", error=str(exc))
+            except Exception as e:
+                logger.warning(
+                    "Auto-title background task failed",
+                    chat_id=chat_id,
+                    user_id=current_user.id,
+                    error=str(e),
+                )
 
         asyncio.create_task(_auto_title())
 
     # Auto-summarizer logic check
     from app.agents.summarizer import check_and_summarize
 
-    asyncio.create_task(check_and_summarize(chat_id, db))
+    asyncio.create_task(check_and_summarize(chat_id))
 
     # Exclude the current user message from the history passed to the agent
     history = [
@@ -189,8 +229,14 @@ async def send_message(
         select(ChatItinerary).where(ChatItinerary.chat_room_id == chat_id)
     )
     itinerary = itinerary_res.scalars().first()
+    itinerary_days = 0
     if itinerary and itinerary.itinerary_data:
         import json
+
+        if isinstance(itinerary.itinerary_data, dict):
+            raw_days = itinerary.itinerary_data.get("days")
+            if isinstance(raw_days, list):
+                itinerary_days = len([day for day in raw_days if isinstance(day, dict)])
 
         itinerary_str = json.dumps(itinerary.itinerary_data, indent=2)
         system_parts.append(
@@ -250,13 +296,27 @@ async def send_message(
         )
 
     logger.info(
+        "Prepared agent context",
+        chat_id=chat_id,
+        user_id=current_user.id,
+        itinerary_loaded=itinerary is not None,
+        itinerary_days=itinerary_days,
+        planning_stage=current_stage,
+        planning_stage_index=stage_index,
+        preference_lines=len(pref_lines),
+        history_messages=len(history),
+    )
+
+    logger.info(
         "Starting agent stream",
         chat_id=chat_id,
         agent=payload.agent,
         user_id=current_user.id,
+        elapsed_ms=round((perf_counter() - request_started_at) * 1000, 2),
     )
 
     async def event_stream():
+        stream_started_at = perf_counter()
         try:
             if payload.agent == "langchain":
                 from app.agents.langchain_agent import run_langchain_agent
@@ -289,6 +349,13 @@ async def send_message(
             logger.exception("Stream error", error=str(e))
             yield f"data: [ERROR] {e}\n\n"
         finally:
+            logger.info(
+                "Agent stream closed",
+                chat_id=chat_id,
+                agent=payload.agent,
+                user_id=current_user.id,
+                elapsed_ms=round((perf_counter() - stream_started_at) * 1000, 2),
+            )
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(

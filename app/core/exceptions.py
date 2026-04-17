@@ -73,7 +73,10 @@ class ResourceNotFoundError(AppException):
             message=message,
             status_code=404,
             error_code="RESOURCE_NOT_FOUND",
-            details={"resource": resource, "resource_id": resource_id},
+            details={
+                "resource": resource,
+                "resource_id": str(resource_id) if resource_id is not None else None,
+            },
         )
 
 

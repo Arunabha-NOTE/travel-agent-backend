@@ -5,6 +5,7 @@ from __future__ import annotations
 from langchain_core.tools import tool
 
 from app.core.config import settings
+from app.agents.tools.utils import persist_tool_result
 
 
 @tool
@@ -35,23 +36,40 @@ async def firecrawl_search(query: str, num_results: int = 3) -> str:
 
         parts = []
         for i, item in enumerate(result.data, 1):
-            title = getattr(item, "title", None) or "Untitled"
-            url = getattr(item, "url", "") or ""
-            content = (
-                getattr(item, "markdown", None)
-                or getattr(item, "description", None)
-                or ""
-            )
+            if isinstance(item, dict):
+                title = item.get("title") or "Untitled"
+                url = item.get("url") or ""
+                content = (
+                    item.get("markdown")
+                    or item.get("description")
+                    or item.get("content")
+                    or ""
+                )
+            else:
+                title = getattr(item, "title", None) or "Untitled"
+                url = getattr(item, "url", "") or ""
+                content = (
+                    getattr(item, "markdown", None)
+                    or getattr(item, "description", None)
+                    or ""
+                )
             # Truncate long content
             if len(content) > 1500:
                 content = content[:1500] + "..."
             parts.append(f"[Result {i}] {title}\nURL: {url}\n\n{content}")
 
-        return (
+        results_str = (
             "\n\n---\n\n".join(parts)
             if parts
             else f"No results found for query: '{query}'"
         )
+        persist_tool_result(
+            "firecrawl_search",
+            f"Web search results for '{query}':\n{results_str}",
+            metadata={"query": query, "num_results": min(num_results, 5)},
+            status="ok" if parts else "empty",
+        )
+        return results_str
 
     except ImportError:
         # Fallback for older SDK versions (< v4)
@@ -74,13 +92,37 @@ async def firecrawl_search(query: str, num_results: int = 3) -> str:
                 if len(content) > 1500:
                     content = content[:1500] + "..."
                 parts.append(f"[Result {i}] {title}\nURL: {url}\n\n{content}")
-            return (
+            output = (
                 "\n\n---\n\n".join(parts)
                 if parts
                 else f"No results found for query: '{query}'"
             )
+            persist_tool_result(
+                "firecrawl_search",
+                f"Web search results for '{query}':\n{output}",
+                metadata={
+                    "query": query,
+                    "num_results": min(num_results, 5),
+                    "sdk": "legacy",
+                },
+                status="ok" if parts else "empty",
+            )
+            return output
         except Exception as e2:
-            return f"Web search unavailable: {e2}. Use your training knowledge instead."
+            output = (
+                f"Web search unavailable: {e2}. Use your training knowledge instead."
+            )
+            persist_tool_result(
+                "firecrawl_search",
+                output,
+                metadata={
+                    "query": query,
+                    "num_results": min(num_results, 5),
+                    "sdk": "legacy",
+                },
+                status="error",
+            )
+            return output
 
     except Exception as e:
         from app.core.logging import get_logger
@@ -88,4 +130,11 @@ async def firecrawl_search(query: str, num_results: int = 3) -> str:
         get_logger(__name__).warning(
             "Firecrawl search error", error=str(e), query=query
         )
-        return f"Web search unavailable (Firecrawl error: {e}). Use your training knowledge instead."
+        output = f"Web search unavailable (Firecrawl error: {e}). Use your training knowledge instead."
+        persist_tool_result(
+            "firecrawl_search",
+            output,
+            metadata={"query": query, "num_results": min(num_results, 5)},
+            status="error",
+        )
+        return output

@@ -5,6 +5,8 @@ from __future__ import annotations
 import httpx
 from langchain_core.tools import tool
 
+from app.agents.tools.utils import persist_tool_result
+
 
 @tool
 async def get_weather(lat: float, lon: float, days: int = 7) -> str:
@@ -89,7 +91,25 @@ async def get_weather(lat: float, lon: float, days: int = 7) -> str:
             rain = precip[i] if i < len(precip) else 0
             lines.append(f"  {date}: {desc}, High {hi}°C / Low {lo}°C, Precip {rain}mm")
 
-        return "\n".join(lines)
+        output = "\n".join(lines)
+        persist_tool_result(
+            "get_weather",
+            output,
+            metadata={"lat": lat, "lon": lon, "days": min(days, 16)},
+            status="ok",
+        )
+        return output
 
     except Exception as e:
-        return f"Weather data unavailable: {e}"
+        output = (
+            f"Weather data currently unavailable due to a technical issue ({e}). "
+            "Please use your general knowledge of the region's climate for the requested month, "
+            "or perform a web search for a general city-level forecast."
+        )
+        persist_tool_result(
+            "get_weather",
+            output,
+            metadata={"lat": lat, "lon": lon, "days": min(days, 16), "error": str(e)},
+            status="error",
+        )
+        return output
