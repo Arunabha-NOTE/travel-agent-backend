@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     # === SERP API Configuration ===
     SERP_API_KEY: str | None = None
+    SERP_FLIGHTS_URL: str = "https://serpapi.com/search?engine=google_flights"
+    SERP_HOTELS_URL: str = "https://serpapi.com/search?engine=google_hotels"
+    SERP_GL: str = "us"
+    SERP_HL: str = "en"
 
     # === Google Maps Configuration ===
     GOOGLE_MAPS_API_KEY: str = "changeme"
@@ -89,10 +93,18 @@ class Settings(BaseSettings):
 # Singleton instance - used throughout the app
 try:
     settings = Settings()
-except Exception as e:
+except Exception:
     # Fallback: Create settings with defaults if environment validation fails
     import os
+
     # Clear DEBUG environment variable if it has invalid value
-    if "DEBUG" in os.environ and os.environ["DEBUG"].lower() not in ("true", "false", "0", "1", "yes", "no"):
+    if "DEBUG" in os.environ and os.environ["DEBUG"].lower() not in (
+        "true",
+        "false",
+        "0",
+        "1",
+        "yes",
+        "no",
+    ):
         os.environ["DEBUG"] = "false"
     settings = Settings()

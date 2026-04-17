@@ -18,6 +18,23 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _safe_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = re.sub(r"[^0-9.\-]", "", value)
+        if not cleaned or cleaned in {"-", ".", "-."}:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # IATA lookup helpers
 # ---------------------------------------------------------------------------
@@ -540,6 +557,63 @@ _HOTEL_BRANDS = [
 ]
 
 
+def _extract_serp_hotel_class(item: dict[str, object]) -> float | None:
+    for key in ("extracted_hotel_class", "hotel_class"):
+        value = item.get(key)
+        numeric = _safe_float(value)
+        if numeric is not None:
+            return numeric
+        if isinstance(value, str):
+            match = re.search(r"\b([1-5](?:\.\d)?)", value)
+            if match:
+                try:
+                    return float(match.group(1))
+                except ValueError:
+                    continue
+    return None
+
+
+def _extract_serp_hotel_price(
+    item: dict[str, object], fallback_currency: str
+) -> tuple[float | None, str]:
+    rate_per_night = item.get("rate_per_night")
+    if isinstance(rate_per_night, dict):
+        for key in (
+            "extracted_lowest",
+            "extracted_before_taxes_fees",
+            "lowest",
+            "before_taxes_fees",
+        ):
+            value = rate_per_night.get(key)
+            if isinstance(value, (int, float)):
+                return float(value), fallback_currency
+            if isinstance(value, str):
+                price, currency = _extract_price(value, fallback_currency)
+                if price is not None:
+                    return price, currency
+
+    for key in ("extracted_price", "price"):
+        value = item.get(key)
+        if isinstance(value, (int, float)):
+            return float(value), fallback_currency
+        if isinstance(value, str):
+            price, currency = _extract_price(value, fallback_currency)
+            if price is not None:
+                return price, currency
+
+    return None, fallback_currency
+
+
+def _extract_serp_hotel_booking_link(
+    item: dict[str, object], default_booking: str
+) -> str:
+    for key in ("link", "serpapi_property_details_link"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return default_booking
+
+
 def _extract_stars(text: str) -> float | None:
     match = re.search(
         r"\b([1-5](?:\.\d)?)\s*(?:/5|stars?|\*)\b", text, flags=re.IGNORECASE
@@ -918,6 +992,124 @@ def _build_model_prior_hotels(
     ]
 
 
+def _hotel_row_needs_gapfill(hotel: dict[str, object]) -> bool:
+    return any(
+        hotel.get(field) in (None, "")
+        for field in ("price_per_night", "booking_link", "stars")
+    )
+
+
+def _flight_row_needs_gapfill(flight: dict[str, object]) -> bool:
+    return any(
+        flight.get(field) in (None, "")
+        for field in ("price", "booking_link", "departure_time", "arrival_time")
+    )
+
+
+def _gapfill_hotel_row_with_firecrawl(
+    hotel: dict[str, object],
+    *,
+    destination: str,
+    check_in: str,
+    check_out: str,
+    target_ccy: str,
+) -> dict[str, object]:
+    if not hotel.get("name"):
+        return hotel
+
+    queries = [
+        f'"{hotel["name"]}" {destination} {check_in} {check_out} nightly price',
+        f'site:google.com/travel/hotels "{hotel["name"]}" {destination}',
+    ]
+    raw = _firecrawl_search(queries, limit=2)
+    if not raw or "[search_error:" in raw:
+        return hotel
+
+    filled = dict(hotel)
+    price, ccy = _extract_price(raw, target_ccy)
+    if filled.get("price_per_night") is None and price is not None:
+        filled["price_per_night"] = _convert_currency(price, ccy, target_ccy)
+        filled["currency"] = target_ccy
+
+    if filled.get("booking_link") in (None, ""):
+        booking_link = _extract_url(raw)
+        if booking_link:
+            filled["booking_link"] = booking_link
+
+    if filled.get("stars") in (None, ""):
+        rating = _extract_stars(raw)
+        if rating is not None:
+            filled["stars"] = rating
+
+    if filled.get("rating") in (None, ""):
+        rating = _extract_stars(raw)
+        if rating is not None:
+            filled["rating"] = rating
+
+    if filled.get("area") in (None, ""):
+        filled["area"] = destination
+
+    return filled
+
+
+def _gapfill_flight_row_with_firecrawl(
+    flight: dict[str, object],
+    *,
+    origin_city: str,
+    destination_city: str,
+    departure_date: str,
+    return_date: str | None,
+    target_ccy: str,
+) -> dict[str, object]:
+    if not flight.get("airline"):
+        return flight
+
+    route = f"{origin_city} to {destination_city}"
+    date_clause = (
+        departure_date if not return_date else f"{departure_date} return {return_date}"
+    )
+    queries = [
+        f'"{flight["airline"]}" {route} {date_clause} flight price',
+        f"site:google.com/travel/flights {route} {date_clause}",
+    ]
+    raw = _firecrawl_search(queries, limit=2)
+    if not raw or "[search_error:" in raw:
+        return flight
+
+    filled = dict(flight)
+    price, ccy = _extract_price(raw, target_ccy)
+    if filled.get("price") is None and price is not None:
+        filled["price"] = _convert_currency(price, ccy, target_ccy)
+        filled["currency"] = target_ccy
+
+    if filled.get("booking_link") in (None, ""):
+        booking_link = _extract_url(raw)
+        if booking_link:
+            filled["booking_link"] = booking_link
+
+    if filled.get("departure_time") in (None, "") or filled.get("arrival_time") in (
+        None,
+        "",
+    ):
+        dep_time, arr_time = _extract_times(raw)
+        if filled.get("departure_time") in (None, "") and dep_time:
+            filled["departure_time"] = dep_time
+        if filled.get("arrival_time") in (None, "") and arr_time:
+            filled["arrival_time"] = arr_time
+
+    if filled.get("duration") in (None, ""):
+        duration = _extract_duration(raw)
+        if duration:
+            filled["duration"] = duration
+
+    if filled.get("stops") in (None, ""):
+        stops = _extract_stops(raw)
+        if stops is not None:
+            filled["stops"] = stops
+
+    return filled
+
+
 # ---------------------------------------------------------------------------
 # Flight search
 # ---------------------------------------------------------------------------
@@ -929,6 +1121,7 @@ def _search_serp_flights(
     origin: str,
     destination: str,
     departure_date: str,
+    return_date: str | None = None,
     adults: int = 1,
     currency: str = "USD",
 ) -> list[dict[str, object]]:
@@ -941,17 +1134,23 @@ def _search_serp_flights(
             logger.debug("SERP API key not configured")
             return []
 
-        api_url = "https://api.serpapi.com/search"
+        api_url = settings.SERP_FLIGHTS_URL
         params = {
             "api_key": api_key,
-            "engine": "google_flights",
             "departure_id": origin,
             "arrival_id": destination,
             "outbound_date": departure_date,
             "adults": adults,
             "currency": currency,
-            "type": 1,  # One-way
+            "gl": settings.SERP_GL,
+            "hl": settings.SERP_HL,
         }
+
+        if return_date:
+            params["type"] = 1  # Round trip
+            params["return_date"] = return_date
+        else:
+            params["type"] = 2  # One-way
 
         response = requests.get(api_url, params=params, timeout=15)
         if response.status_code != 200:
@@ -1027,15 +1226,16 @@ def _search_serp_hotels(
             logger.debug("SERP API key not configured for hotels")
             return []
 
-        api_url = "https://api.serpapi.com/search"
+        api_url = settings.SERP_HOTELS_URL
         params = {
             "api_key": api_key,
-            "engine": "google_hotels",
             "q": destination,
             "check_in_date": check_in,
             "check_out_date": check_out,
             "adults": guests,
             "currency": currency,
+            "gl": settings.SERP_GL,
+            "hl": settings.SERP_HL,
         }
 
         response = requests.get(api_url, params=params, timeout=15)
@@ -1044,31 +1244,36 @@ def _search_serp_hotels(
             return []
 
         data = response.json()
-        hotel_results = data.get("properties", [])
+        hotel_results = []
+        if isinstance(data.get("properties"), list):
+            hotel_results.extend(data["properties"])
+        if isinstance(data.get("ads"), list):
+            hotel_results.extend(data["ads"])
         hotels: list[dict[str, object]] = []
 
         for hotel in hotel_results[:5]:  # Top 5 hotels
             try:
-                price = hotel.get("price")
+                price, price_currency = _extract_serp_hotel_price(hotel, currency)
                 hotel_name = hotel.get("name", "Unknown")
-                rating = (
-                    hotel.get("review_snippets", [{}])[0].get("rating")
-                    if hotel.get("review_snippets")
-                    else None
+                hotel_class = _extract_serp_hotel_class(hotel)
+                rating = _safe_float(hotel.get("overall_rating"))
+                area = hotel.get("address") or hotel.get("description") or destination
+                booking_link = _extract_serp_hotel_booking_link(
+                    hotel, "https://www.google.com/travel/hotels"
                 )
-                area = hotel.get("address", "")
-                booking_link = hotel.get("link", "https://www.google.com/travel/hotels")
 
                 hotels.append(
                     {
                         "name": hotel_name,
-                        "price_per_night": float(price) if price else None,
-                        "currency": currency,
-                        "stars": float(rating) if rating else 3.5,
+                        "price_per_night": price,
+                        "currency": price_currency,
+                        "stars": hotel_class if hotel_class is not None else 3.5,
+                        "rating": rating,
                         "area": area if area else destination,
                         "booking_link": booking_link,
-                        "confidence": 0.95,
-                        "source": "serp",
+                        "property_token": hotel.get("property_token"),
+                        "source": hotel.get("source") or hotel.get("type") or "serp",
+                        "confidence": 0.95 if price is not None else 0.75,
                     }
                 )
             except Exception as e:
@@ -1208,6 +1413,7 @@ async def search_flights(
                 origin=origin_code,
                 destination=dest_code,
                 departure_date=departure_date,
+                return_date=return_date,
                 adults=passengers,
                 currency=target_ccy,
             )
@@ -1264,6 +1470,27 @@ async def search_flights(
             # No live data available from either source
             source_layer = "fallback_links"
             flights = []
+
+    if flights and source_layer in {"vector_kb", "serp_api", "web_scrape"}:
+        enriched_flights: list[dict[str, object]] = []
+        gapfill_count = 0
+        for flight in flights:
+            updated_flight = flight
+            if _flight_row_needs_gapfill(flight):
+                updated_flight = _gapfill_flight_row_with_firecrawl(
+                    flight,
+                    origin_city=origin_city,
+                    destination_city=destination_city,
+                    departure_date=departure_date,
+                    return_date=return_date,
+                    target_ccy=target_ccy,
+                )
+                if updated_flight != flight:
+                    gapfill_count += 1
+            enriched_flights.append(updated_flight)
+        if gapfill_count:
+            flights = _sanitize_flight_rows(enriched_flights, target_ccy)
+            source_layer = f"{source_layer}+firecrawl_gapfill"
 
     payload: dict[str, object] = {
         "query": {
@@ -1803,6 +2030,26 @@ async def search_hotels(
                 brand_preference,
                 budget_per_night,
             )
+
+    if hotels and source_layer in {"vector_kb", "serp_api", "web_scrape"}:
+        enriched_hotels: list[dict[str, object]] = []
+        gapfill_count = 0
+        for hotel in hotels:
+            updated_hotel = hotel
+            if _hotel_row_needs_gapfill(hotel):
+                updated_hotel = _gapfill_hotel_row_with_firecrawl(
+                    hotel,
+                    destination=destination,
+                    check_in=check_in,
+                    check_out=check_out,
+                    target_ccy=target_ccy,
+                )
+                if updated_hotel != hotel:
+                    gapfill_count += 1
+            enriched_hotels.append(updated_hotel)
+        if gapfill_count:
+            hotels = enriched_hotels
+            source_layer = f"{source_layer}+firecrawl_gapfill"
 
     payload: dict[str, object] = {
         "query": {
