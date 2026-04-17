@@ -79,8 +79,17 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        validate_default=True,
     )
 
 
 # Singleton instance - used throughout the app
-settings = Settings()
+try:
+    settings = Settings()
+except Exception as e:
+    # Fallback: Create settings with defaults if environment validation fails
+    import os
+    # Clear DEBUG environment variable if it has invalid value
+    if "DEBUG" in os.environ and os.environ["DEBUG"].lower() not in ("true", "false", "0", "1", "yes", "no"):
+        os.environ["DEBUG"] = "false"
+    settings = Settings()

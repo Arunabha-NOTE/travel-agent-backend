@@ -827,6 +827,99 @@ def _build_model_prior_hotels(
 # ---------------------------------------------------------------------------
 # Flight search
 # ---------------------------------------------------------------------------
+# SERP API integration for real flight data
+# ---------------------------------------------------------------------------
+
+
+def _search_serp_flights(
+    origin: str,
+    destination: str,
+    departure_date: str,
+    adults: int = 1,
+    currency: str = "USD",
+) -> list[dict[str, object]]:
+    """Search flights via SERP API (Google Flights scraping) and extract results."""
+    try:
+        import requests
+
+        api_key = getattr(settings, "SERP_API_KEY", None)
+        if not api_key:
+            logger.debug("SERP API key not configured")
+            return []
+
+        api_url = "https://api.serpapi.com/search"
+        params = {
+            "api_key": api_key,
+            "engine": "google_flights",
+            "departure_id": origin,
+            "arrival_id": destination,
+            "outbound_date": departure_date,
+            "adults": adults,
+            "currency": currency,
+            "type": 1,  # One-way
+        }
+
+        response = requests.get(api_url, params=params, timeout=15)
+        if response.status_code != 200:
+            logger.warning(f"SERP API error: {response.status_code}")
+            return []
+
+        data = response.json()
+        best_flights = data.get("best_flights", [])
+        other_flights = data.get("other_flights", [])
+        all_flights = best_flights + other_flights
+
+        flights: list[dict[str, object]] = []
+
+        for flight in all_flights[:5]:  # Top 5 flights
+            try:
+                price = flight.get("price")
+                airline_name = flight.get("airline", "Unknown")
+                duration = flight.get("total_duration", "")
+
+                # Extract times from flight legs
+                legs = flight.get("flights", [])
+                dep_time = None
+                arr_time = None
+                stops = len(legs) - 1
+
+                if legs:
+                    dep_time = legs[0].get("departure_time", "")
+                    arr_time = legs[-1].get("arrival_time", "")
+
+                booking_link = flight.get("booking_links", [{}])[0].get("link", "")
+
+                flights.append(
+                    {
+                        "airline": airline_name,
+                        "price": float(price) if price else None,
+                        "currency": currency,
+                        "departure_time": dep_time if dep_time else None,
+                        "arrival_time": arr_time if arr_time else None,
+                        "duration": f"{duration} min" if duration else "unknown",
+                        "stops": stops,
+                        "booking_link": booking_link
+                        or "https://www.google.com/flights",
+                        "confidence": 0.98,
+                        "source": "serp",
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"Error parsing SERP flight: {str(e)}")
+                continue
+
+        if flights:
+            logger.info(f"SERP API found {len(flights)} flights")
+        return flights
+
+    except Exception as e:
+        logger.warning(f"SERP flight search failed: {str(e)}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Flight search
+# ---------------------------------------------------------------------------
 
 
 @tool
@@ -840,27 +933,23 @@ async def search_flights(
     currency: str | None = None,
     flight_number: str | None = None,
 ) -> str:
-    """Search for flights with web scraping and provide booking guidance.
+    """Search for flights with SERP API and Firecrawl fallback.
 
-    ⚠️ LIMITATION: This tool uses web scraping and CANNOT access real-time flight APIs.
-    For accurate current pricing, the tool will provide direct links to:
-    - Google Flights (real-time data)
-    - Skyscanner (real-time data)
-    - Official airline websites
-    - Local booking sites (MakeMyTrip for India)
+    ✅ REAL DATA: Uses SERP API for real-time Google Flights data
 
     Strategy:
     1) Normalize cities to IATA codes
-    2) Try targeted web queries (structured sources, India sites)
-    3) Extract and normalize flight rows if available
-    4) If no live data found, return helpful links to real-time sources
-    5) Never invent flight data - transparency > guessing
+    2) TRY 1: Query SERP API for live flight offers and prices
+    3) TRY 2: Fall back to Firecrawl web search if SERP fails
+    4) Extract and normalize flight rows if available
+    5) If no live data found, return helpful links to official booking sites
+    6) Never invent flight data - transparency > guessing
 
     Args:
         origin_city: Departure city (e.g. "Pune, India")
         destination_city: Destination city (e.g. "Paris, France")
         departure_date: Date in YYYY-MM-DD format
-        return_date: Return date for round-trip, None for one-way
+        return_date: Return date for round-trip, None for one-way (SERP: not yet supported)
         cabin_class: economy | premium_economy | business | first
         passengers: Number of passengers
         currency: Preferred currency for results (e.g. "INR", "USD", "EUR")
@@ -883,39 +972,73 @@ async def search_flights(
     trip_type = "round_trip" if return_date else "one_way"
     fallback_booking = "https://www.google.com/travel/flights"
 
-    fn_q = f" {flight_number}" if flight_number else ""
-    targeted_queries = [
-        f"site:google.com/travel/flights {origin_code} {dest_code} {departure_date}{fn_q}",
-        f"site:skyscanner.com flights {origin_code} {dest_code} {departure_date}",
-        f"site:kayak.com flights {origin_code} {dest_code} {departure_date}",
-    ]
-    if "INR" == target_ccy:
-        targeted_queries.append(
-            f"site:makemytrip.com flights {origin_city} to {destination_city} {departure_date}"
+    flights = []
+    source_layer = "no_live_data"
+
+    # TRY 1: SERP API (real Google Flights data, most reliable)
+    # ========================================================
+    logger.debug("Attempting SERP API flight search")
+    try:
+        flights = _search_serp_flights(
+            origin=origin_code,
+            destination=dest_code,
+            departure_date=departure_date,
+            adults=passengers,
+            currency=target_ccy,
+        )
+        if flights:
+            logger.info(f"SERP API successful: found {len(flights)} flights")
+            source_layer = "serp_api"
+        else:
+            logger.debug("SERP API returned no results")
+    except Exception as e:
+        logger.warning(f"SERP API search failed: {str(e)}")
+
+    # TRY 2: Fall back to Firecrawl web search (if Amadeus didn't work)
+    # ==================================================================
+    if not flights or source_layer == "no_live_data":
+        logger.debug("Using Firecrawl-based flight extraction as fallback")
+
+        fn_q = f" {flight_number}" if flight_number else ""
+        # Search queries for flight pricing information
+        targeted_queries = [
+            f"cheapest flights {origin_code} to {dest_code} {departure_date}{fn_q}",
+            f"{origin_city.split(',')[0]} to {destination_city.split(',')[0]} flight prices {departure_date}",
+            f"best flight deals {origin_code} {dest_code} {departure_date}",
+        ]
+
+        # Add India-specific sources for INR currency
+        if "INR" == target_ccy:
+            targeted_queries.extend(
+                [
+                    f"makemytrip flights {origin_city} to {destination_city} {departure_date}",
+                    f"indigo air india flights {origin_code} {dest_code}",
+                ]
+            )
+
+        source_layer = "web_scrape"
+        raw = _firecrawl_search(targeted_queries, limit=5)
+        flights = (
+            _normalize_flights(
+                raw,
+                fallback_currency=target_ccy,
+                default_booking=fallback_booking,
+                origin_city=origin_city,
+                destination_city=destination_city,
+                origin_code=origin_code,
+                destination_code=dest_code,
+            )
+            if raw and "[search_error:" not in raw
+            else []
         )
 
-    source_layer = "web_scrape"
-    raw = _firecrawl_search(targeted_queries, limit=4)
-    flights = (
-        _normalize_flights(
-            raw,
-            fallback_currency=target_ccy,
-            default_booking=fallback_booking,
-            origin_city=origin_city,
-            destination_city=destination_city,
-            origin_code=origin_code,
-            destination_code=dest_code,
-        )
-        if raw and "[search_error:" not in raw
-        else []
-    )
-
-    if flights:
-        flights = _sanitize_flight_rows(flights, target_ccy)
-    else:
-        source_layer = "no_live_data"
-        # When no live data is available, provide helpful guidance instead
-        flights = []
+        if flights:
+            flights = _sanitize_flight_rows(flights, target_ccy)
+            logger.info(f"Firecrawl fallback found {len(flights)} flights")
+        else:
+            # No live data available from either source
+            source_layer = "fallback_links"
+            flights = []
 
     payload: dict[str, object] = {
         "query": {
@@ -931,41 +1054,69 @@ async def search_flights(
         },
         "flights": flights,
         "source_layer": source_layer,
+        "extraction_method": "serp_api"
+        if source_layer == "serp_api"
+        else "firecrawl_web_search"
+        if source_layer == "web_scrape"
+        else "booking_links",
         "grounding": {
             "strict_tool_grounding": True,
-            "allow_exact_schedules": source_layer == "web_scrape",
-            "requires_user_verification": source_layer != "web_scrape",
+            "allow_exact_schedules": source_layer in ["playwright", "web_scrape"],
+            "requires_user_verification": source_layer
+            in ["no_live_data", "fallback_links"],
         },
         "data_quality": {
-            "is_live_data": source_layer == "web_scrape",
-            "is_real_time": False,
+            "is_live_data": source_layer in ["playwright", "web_scrape"],
+            "is_real_time": source_layer == "playwright",
+            "extraction_method": source_layer,
             "timestamp": None,
         },
         "notes": [
-            "⚠️ Live flight data unavailable - tool uses web scraping which cannot access real-time APIs.",
-            "✅ SOLUTION: Check these official sources for accurate current pricing and availability:",
-            "📌 RECOMMENDED SITES (Real-time data):",
-            "  1. Google Flights: https://www.google.com/travel/flights",
-            "  2. Skyscanner: https://www.skyscanner.com",
-            "  3. Kayak: https://www.kayak.com",
-            "  4. Airline Direct (fastest booking):",
-            "     - Air India: https://www.airindia.com",
-            "     - IndiGo: https://www.goindigo.in",
-            "     - SpiceJet: https://www.spicejet.com",
-            "     - Vistara: https://www.vistara.com",
-            "📱 LOCAL BOOKING APPS:",
-            "  - MakeMyTrip (India): https://www.makemytrip.com",
-            "  - OneMyTrip (India): https://www.onemytrip.com",
+            f"📊 Extraction method: {source_layer.upper()}",
+            ""
+            if source_layer in ["playwright", "web_scrape"]
+            else "⚠️ Live flight data unavailable",
+            ""
+            if source_layer in ["playwright", "web_scrape"]
+            else "✅ SOLUTION: Check these OFFICIAL sources for accurate current pricing:",
+            "" if source_layer in ["playwright", "web_scrape"] else "",
+            "🌐 RECOMMENDED BOOKING SITES (Real-time data):",
+            "  1. 🔵 Google Flights → https://www.google.com/travel/flights",
+            "     (Best for price comparison & flexible dates)",
             "",
-            "💡 TIP: Use 'Flexible dates' on Google Flights to see cheapest days near your date.",
-            "💡 TIP: Flight prices typically drop on Tuesdays/Wednesdays, peak on weekends.",
+            "  2. 🟦 Skyscanner → https://www.skyscanner.com",
+            "     (Compare multiple airlines & prices)",
+            "",
+            "  3. 🟨 Kayak → https://www.kayak.com",
+            "     (Price alerts & flexible search)",
+            "",
+            "✈️ DIRECT AIRLINE BOOKING (Often cheapest):",
+            "  • IndiGo → https://www.goindigo.in",
+            "  • Air India → https://www.airindia.com",
+            "  • SpiceJet → https://www.spicejet.com",
+            "  • Vistara → https://www.vistara.com",
+            "",
+            "🇮🇳 INDIA-SPECIFIC (for domestic flights):",
+            "  • MakeMyTrip → https://www.makemytrip.com (₹ prices)",
+            "  • OneMyTrip → https://www.onemytrip.com",
+            "",
+            "💡 PRO TIPS:",
+            "  → Prices drop Tuesday-Wednesday (avoid weekends)",
+            "  → Book 1-3 months in advance for best prices",
+            "  → Use flexible date search to find cheaper alternatives",
+            "  → Clear browser cookies before comparing prices",
         ],
         "recommended_live_sources": [
-            "https://www.google.com/travel/flights",
-            "https://www.skyscanner.com",
-            "https://www.kayak.com",
-            "https://www.goindigo.in" if origin_code and dest_code else None,
-            "https://www.airindia.com" if origin_code and dest_code else None,
+            s
+            for s in [
+                "https://www.google.com/travel/flights",
+                "https://www.skyscanner.com",
+                "https://www.kayak.com",
+                "https://www.goindigo.in" if origin_code and dest_code else None,
+                "https://www.airindia.com" if origin_code and dest_code else None,
+                "https://www.makemytrip.com" if target_ccy == "INR" else None,
+            ]
+            if s is not None
         ],
     }
 
@@ -980,15 +1131,28 @@ async def search_flights(
             "destination_iata": dest_code,
             "departure_date": departure_date,
             "source_layer": source_layer,
+            "extraction_method": "serp_api"
+            if source_layer == "serp_api"
+            else "firecrawl"
+            if source_layer == "web_scrape"
+            else "fallback_links",
+            "flight_count": len(flights),
         },
-        status="ok" if source_layer == "web_scrape" else "empty",
+        status="ok" if source_layer in ["serp_api", "web_scrape"] else "partial",
     )
     _log_tool_outcome(
         "search_flights",
         source_layer=source_layer,
         result_count=len(flights),
-        fallback_reason="no_live_rows_extracted"
-        if source_layer == "no_live_data"
+        extraction_method="serp_api"
+        if source_layer == "serp_api"
+        else "firecrawl"
+        if source_layer == "web_scrape"
+        else "fallback_links",
+        fallback_reason="serp_api_failed"
+        if source_layer == "web_scrape"
+        else "no_live_data"
+        if source_layer == "fallback_links"
         else None,
         origin_city=origin_city,
         destination_city=destination_city,
@@ -1011,15 +1175,15 @@ async def get_airport_transit(
     from_terminal: str,
     to_terminal: str,
 ) -> str:
-    """Get transit time and method between terminals at an airport.
+    r"""Get transit time and method between terminals at an airport.
 
     Use this whenever a passenger has a layover and needs to change terminals
-    (e.g. Mumbai BOM T1 domestic to T2 international, CDG Terminal 1 to 2E).
+    (e.g. Mumbai BOM T1 domestic to T2 international, CDG "Terminal 1" to "Terminal 2E").
 
     Args:
         airport_name: Full airport name or city (e.g. "Mumbai", "Charles de Gaulle")
         from_terminal: Departure terminal (e.g. "T1", "Terminal 1", "domestic")
-        to_terminal: Arrival terminal (e.g. "T2", "2E", "international")
+        to_terminal: Arrival terminal (e.g. "T2", "Terminal 2E", "international")
     """
     logger.info(
         "Airport transit lookup requested",
