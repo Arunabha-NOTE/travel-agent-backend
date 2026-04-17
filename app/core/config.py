@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # === Firecrawl Configuration ===
     FIRECRAWL_API_KEY: str = "changeme"
 
+    # === SERP API Configuration ===
+    SERP_API_KEY: str | None = None
+
     # === Google Maps Configuration ===
     GOOGLE_MAPS_API_KEY: str = "changeme"
 
