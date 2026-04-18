@@ -33,3 +33,5 @@ dist/
 logs/app.log
 
 chatbot-backend\drop_db.py
+.firecrawl/serpapi.com-google-flights-api.md
+.firecrawl/serpapi.com-google-hotels-api.md
