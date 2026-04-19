@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +65,17 @@ class Settings(BaseSettings):
     # === CORS Configuration ===
     CORS_ORIGINS: list[str]
 
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("[") and text.endswith("]"):
+                return json.loads(text)
+            return [item.strip() for item in text.split(",") if item.strip()]
+
+        return value
+
     # === Application Environment ===
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
@@ -75,6 +88,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        enable_decoding=False,
         validate_default=True,
     )
 

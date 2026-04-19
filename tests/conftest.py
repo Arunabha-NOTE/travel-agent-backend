@@ -18,5 +18,5 @@ def pytest_configure() -> None:
     os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
     os.environ.setdefault(
         "CORS_ORIGINS",
-        '["http://localhost","http://127.0.0.1","https://travel-agent.arunabha.in"]',
+        "http://localhost,http://127.0.0.1,https://travel-agent.arunabha.in",
     )
