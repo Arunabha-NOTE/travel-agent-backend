@@ -10,7 +10,6 @@ from langchain_core.tools import tool
 
 from app.agents.tools.utils import (
     get_kb_fallback,
-    get_kb_fallback_docs,
     persist_tool_result,
 )
 from app.core.config import settings
@@ -1117,996 +1116,321 @@ def _gapfill_flight_row_with_firecrawl(
 # ---------------------------------------------------------------------------
 
 
-def _search_serp_flights(
-    origin: str,
-    destination: str,
-    departure_date: str,
-    return_date: str | None = None,
-    adults: int = 1,
-    currency: str = "USD",
-) -> list[dict[str, object]]:
-    """Search flights via SERP API (Google Flights scraping) and extract results."""
+def _search_serp_flights(params_dict: dict) -> dict:
+    """Search flights via SERP API and return the raw JSON dict."""
     try:
         import requests
+        from app.core.config import settings
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
 
         api_key = getattr(settings, "SERP_API_KEY", None)
         if not api_key:
             logger.debug("SERP API key not configured")
-            return []
+            return {}
 
-        api_url = settings.SERP_FLIGHTS_URL
         params = {
             "api_key": api_key,
-            "departure_id": origin,
-            "arrival_id": destination,
-            "outbound_date": departure_date,
-            "adults": adults,
-            "currency": currency,
-            "gl": settings.SERP_GL,
-            "hl": settings.SERP_HL,
+            "engine": "google_flights",
+            "gl": getattr(settings, "SERP_GL", "us"),
+            "hl": getattr(settings, "SERP_HL", "en"),
         }
+        params.update(params_dict)
 
-        if return_date:
-            params["type"] = 1  # Round trip
-            params["return_date"] = return_date
-        else:
-            params["type"] = 2  # One-way
+        api_url = getattr(settings, "SERP_FLIGHTS_URL", "https://serpapi.com/search")
+        response = requests.get(api_url, params=params, timeout=20)
 
-        response = requests.get(api_url, params=params, timeout=15)
         if response.status_code != 200:
             logger.warning(f"SERP API error: {response.status_code}")
-            return []
+            return {}
 
-        data = response.json()
-        best_flights = data.get("best_flights", [])
-        other_flights = data.get("other_flights", [])
-        all_flights = best_flights + other_flights
-
-        flights: list[dict[str, object]] = []
-
-        for flight in all_flights[:5]:  # Top 5 flights
-            try:
-                price = flight.get("price")
-                airline_name = flight.get("airline", "Unknown")
-                duration = flight.get("total_duration", "")
-
-                # Extract times from flight legs
-                legs = flight.get("flights", [])
-                dep_time = None
-                arr_time = None
-                stops = len(legs) - 1
-
-                if legs:
-                    dep_time = legs[0].get("departure_time", "")
-                    arr_time = legs[-1].get("arrival_time", "")
-
-                booking_link = flight.get("booking_links", [{}])[0].get("link", "")
-
-                flights.append(
-                    {
-                        "airline": airline_name,
-                        "price": float(price) if price else None,
-                        "currency": currency,
-                        "departure_time": dep_time if dep_time else None,
-                        "arrival_time": arr_time if arr_time else None,
-                        "duration": f"{duration} min" if duration else "unknown",
-                        "stops": stops,
-                        "booking_link": booking_link
-                        or "https://www.google.com/flights",
-                        "confidence": 0.98,
-                        "source": "serp",
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"Error parsing SERP flight: {str(e)}")
-                continue
-
-        if flights:
-            logger.info(f"SERP API found {len(flights)} flights")
-        return flights
-
+        return response.json()
     except Exception as e:
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
         logger.warning(f"SERP flight search failed: {str(e)}")
-        return []
+        return {}
 
 
-def _search_serp_hotels(
-    destination: str,
-    check_in: str,
-    check_out: str,
-    guests: int = 2,
-    currency: str = "USD",
-) -> list[dict[str, object]]:
-    """Search hotels via SERP API (Google Hotels scraping) and extract results."""
+def _search_serp_hotels(params_dict: dict) -> dict:
+    """Search hotels via SERP API and return the raw JSON dict."""
     try:
         import requests
+        from app.core.config import settings
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
 
         api_key = getattr(settings, "SERP_API_KEY", None)
         if not api_key:
-            logger.debug("SERP API key not configured for hotels")
-            return []
+            logger.debug("SERP API key not configured")
+            return {}
 
-        api_url = settings.SERP_HOTELS_URL
         params = {
             "api_key": api_key,
-            "q": destination,
-            "check_in_date": check_in,
-            "check_out_date": check_out,
-            "adults": guests,
-            "currency": currency,
-            "gl": settings.SERP_GL,
-            "hl": settings.SERP_HL,
+            "engine": "google_hotels",
+            "gl": getattr(settings, "SERP_GL", "us"),
+            "hl": getattr(settings, "SERP_HL", "en"),
         }
+        params.update(params_dict)
 
-        response = requests.get(api_url, params=params, timeout=15)
+        api_url = getattr(settings, "SERP_HOTELS_URL", "https://serpapi.com/search")
+        response = requests.get(api_url, params=params, timeout=20)
+
         if response.status_code != 200:
-            logger.warning(f"SERP API (hotels) error: {response.status_code}")
-            return []
+            logger.warning(f"SERP API error: {response.status_code}")
+            return {}
 
-        data = response.json()
-        hotel_results = []
-        if isinstance(data.get("properties"), list):
-            hotel_results.extend(data["properties"])
-        if isinstance(data.get("ads"), list):
-            hotel_results.extend(data["ads"])
-        hotels: list[dict[str, object]] = []
-
-        for hotel in hotel_results[:5]:  # Top 5 hotels
-            try:
-                price, price_currency = _extract_serp_hotel_price(hotel, currency)
-                hotel_name = hotel.get("name", "Unknown")
-                hotel_class = _extract_serp_hotel_class(hotel)
-                rating = _safe_float(hotel.get("overall_rating"))
-                area = hotel.get("address") or hotel.get("description") or destination
-                booking_link = _extract_serp_hotel_booking_link(
-                    hotel, "https://www.google.com/travel/hotels"
-                )
-
-                hotels.append(
-                    {
-                        "name": hotel_name,
-                        "price_per_night": price,
-                        "currency": price_currency,
-                        "stars": hotel_class if hotel_class is not None else 3.5,
-                        "rating": rating,
-                        "area": area if area else destination,
-                        "booking_link": booking_link,
-                        "property_token": hotel.get("property_token"),
-                        "source": hotel.get("source") or hotel.get("type") or "serp",
-                        "confidence": 0.95 if price is not None else 0.75,
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"Error parsing SERP hotel: {str(e)}")
-                continue
-
-        if hotels:
-            logger.info(f"SERP API found {len(hotels)} hotels")
-        return hotels
-
+        return response.json()
     except Exception as e:
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
         logger.warning(f"SERP hotel search failed: {str(e)}")
-        return []
-
-
-# ---------------------------------------------------------------------------
-# Flight search
-# ---------------------------------------------------------------------------
+        return {}
 
 
 @tool
 async def search_flights(
-    origin_city: str,
-    destination_city: str,
-    departure_date: str,
+    departure_id: str,
+    arrival_id: str,
+    outbound_date: str,
     return_date: str | None = None,
-    cabin_class: str = "economy",
-    passengers: int = 1,
-    currency: str | None = None,
-    flight_number: str | None = None,
+    type: str = "1",
+    travel_class: str = "1",
+    multi_city_json: str | None = None,
+    show_hidden: str = "true",
+    exclude_basic: str | None = None,
+    deep_search: str = "true",
+    adults: str = "1",
+    children: str | None = None,
+    infants_in_seat: str | None = None,
+    infants_on_lap: str | None = None,
+    sort_by: str = "1",
+    stops: str | None = "0",
+    exclude_airlines: str | None = None,
+    include_airlines: str | None = None,
+    bags: str | None = None,
+    max_price: str | None = None,
+    outbound_times: str | None = None,
+    return_times: str | None = None,
+    emissions: str | None = None,
+    layover_duration: str | None = None,
+    exclude_conns: str | None = None,
+    max_duration: str | None = None,
+    currency: str = "USD",
     force_live_data: bool = False,
 ) -> str:
-    """Search for flights with smart RAG/API strategy to save credits while honoring user intent.
-
-    ✅ REAL DATA: Smart caching - checks RAG first UNLESS user asks for latest data
-
-    Strategy:
-    1) Normalize cities to IATA codes
-    2) Check if user wants "latest/current/real-time" data → skip cache if yes
-    3) TRY 1: Check RAG/vector database for cached flight data (SAVES CREDITS) *unless force_live_data=True*
-    4) TRY 2: If not found or force_live_data=True, query SERP API for live flight offers and prices
-    5) TRY 3: Fall back to Firecrawl web search if SERP fails
-    6) Extract and normalize flight rows if available
-    7) If no live data found, return helpful links to official booking sites
-    8) Never invent flight data - transparency > guessing
+    """Search for flights via Google Flights (SERP API).
+    Returns exact LIVE pricing and schedules as JSON. Pass the response JSON as is to the user.
 
     Args:
-        origin_city: Departure city (e.g. "Pune, India")
-        destination_city: Destination city (e.g. "Paris, France")
-        departure_date: Date in YYYY-MM-DD format
-        return_date: Return date for round-trip, None for one-way (SERP: not yet supported)
-        cabin_class: economy | premium_economy | business | first
-        passengers: Number of passengers
-        currency: Preferred currency for results (e.g. "INR", "USD", "EUR")
-        flight_number: Specific flight number to research (e.g. "6E 2045")
-        force_live_data: If True or user asks for "latest", skip cache and query live API
+        departure_id: Departure airport IATA code MUST be capitalized (e.g., "BOM" for Mumbai).
+        arrival_id: Arrival airport IATA code MUST be capitalized (e.g., "MLE" for Male).
+        outbound_date: Departure date in YYYY-MM-DD.
+        return_date: Return date in YYYY-MM-DD.
+        type: "1" for Round trip, "2" for One-way, "3" for Multi-city.
+        travel_class: "1" (Economy), "2" (Premium Economy), "3" (Business), "4" (First).
+        multi_city_json: Used if type is 3. Format: '[{"departure_id":"CDG","arrival_id":"NRT","date":"2026-04-25"}]'.
+        show_hidden: "true" to include hidden itineraries.
+        exclude_basic: "true" to exclude basic economy.
+        deep_search: "true" to do a full search.
+        adults: Number of adults ("1").
+        children: Number of children ("1").
+        infants_in_seat: Number of infants in seat ("1").
+        infants_on_lap: Number of infants on lap ("1").
+        sort_by: "1" (Top flights), "2" (Price), "3" (Departure Obj.), "4" (Arrival Obj.), "5" (Duration).
+        stops: "0" (Nonstop), "1" (max 1 stop), "2" (max 2 stops).
+        exclude_airlines: Exclude specific airline code/alliance (e.g., "STAR_ALLIANCE").
+        include_airlines: Include specific airline code (e.g., "AI").
+        bags: Number of carry-on bags ("1").
+        max_price: Max price (e.g., "109000").
+        outbound_times: Departure times bounds, format "4,18".
+        return_times: Return times bounds, format "4,18".
+        emissions: "1" to show less emissions flights.
+        layover_duration: "2" for max layover.
+        exclude_conns: IATA code for connections to exclude "BOM,PNQ".
+        max_duration: Max duration in hours (e.g., "124").
+        currency: Currency code (e.g., "INR", "USD").
+        force_live_data: Bypass internal caching if True.
     """
-    logger.info(
-        "Flight search requested",
-        origin_city=origin_city,
-        destination_city=destination_city,
-        departure_date=departure_date,
-        return_date=return_date,
-        cabin_class=cabin_class,
-        passengers=passengers,
-        flight_number=flight_number,
-    )
-    origin_code = _city_to_code(origin_city)
-    dest_code = _city_to_code(destination_city)
-    loc = _get_locality(destination_city)
-    target_ccy = (currency or loc["ccy"]).upper()
-    trip_type = "round_trip" if return_date else "one_way"
-    fallback_booking = "https://www.google.com/travel/flights"
+    from app.core.logging import get_logger
+    from app.agents.tools.utils import persist_tool_result
 
-    flights = []
-    source_layer = "no_live_data"
+    logger = get_logger(__name__)
+    logger.info(f"Flight search {departure_id} -> {arrival_id} on {outbound_date}")
 
-    # Check if user explicitly wants live data
-    skip_cache = force_live_data or _wants_live_data(flight_number or origin_city)
-
-    if skip_cache:
-        logger.info("User requested live data - skipping cache to query API")
-
-    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS) - unless user wants live data
-    # ==============================================================================
-    if not skip_cache:
-        logger.debug(
-            f"Attempting RAG lookup for flights {origin_code} -> {dest_code} on {departure_date}"
-        )
-        try:
-            rag_query = f"flights {origin_code} to {dest_code} {departure_date} {cabin_class} {passengers} passengers {target_ccy}"
-            rag_docs = await get_kb_fallback_docs(rag_query, k=5)
-            filtered_docs = [
-                doc
-                for doc in rag_docs
-                if _matches_requested_date(
-                    doc.metadata,
-                    requested_departure_date=departure_date,
-                )
-                and _is_recent_cache_entry(doc.metadata, max_age_days=14)
-            ]
-            rag_data = "\n\n---\n\n".join(doc.content for doc in filtered_docs)
-            if rag_data:
-                flights = _normalize_flights(
-                    rag_data,
-                    fallback_currency=target_ccy,
-                    default_booking="https://www.google.com/travel/flights",
-                    origin_city=origin_city,
-                    destination_city=destination_city,
-                    origin_code=origin_code,
-                    destination_code=dest_code,
-                )
-                if flights:
-                    flights = _sanitize_flight_rows(flights, target_ccy)
-                    logger.info(
-                        f"RAG database successful: found {len(flights)} cached flights for {departure_date} - API CREDIT SAVED"
-                    )
-                    source_layer = "vector_kb"
-            elif rag_docs:
-                logger.debug(
-                    "Skipping flight cache because cached date or freshness did not match",
-                    requested_date=departure_date,
-                    cached_dates=[
-                        str(doc.metadata.get("departure_date") or "")
-                        for doc in rag_docs[:5]
-                    ],
-                )
-        except Exception as e:
-            logger.debug(f"RAG lookup failed: {str(e)}")
-
-    # TRY 2: SERP API (real Google Flights data, if RAG had no results)
-    # ==================================================================
-    if not flights or source_layer == "no_live_data":
-        logger.debug("Attempting SERP API flight search")
-        try:
-            flights = _search_serp_flights(
-                origin=origin_code,
-                destination=dest_code,
-                departure_date=departure_date,
-                return_date=return_date,
-                adults=passengers,
-                currency=target_ccy,
-            )
-            if flights:
-                logger.info(f"SERP API successful: found {len(flights)} flights")
-                source_layer = "serp_api"
-            else:
-                logger.debug("SERP API returned no results")
-        except Exception as e:
-            logger.warning(f"SERP API search failed: {str(e)}")
-
-    # TRY 3: Fall back to Firecrawl web search (if SERP didn't work)
-    # ==================================================================
-    if not flights or source_layer == "no_live_data":
-        logger.debug("Using Firecrawl-based flight extraction as fallback")
-
-        fn_q = f" {flight_number}" if flight_number else ""
-        # Search queries for flight pricing information
-        targeted_queries = [
-            f"cheapest flights {origin_code} to {dest_code} {departure_date}{fn_q}",
-            f"{origin_city.split(',')[0]} to {destination_city.split(',')[0]} flight prices {departure_date}",
-            f"best flight deals {origin_code} {dest_code} {departure_date}",
-        ]
-
-        # Add India-specific sources for INR currency
-        if "INR" == target_ccy:
-            targeted_queries.extend(
-                [
-                    f"makemytrip flights {origin_city} to {destination_city} {departure_date}",
-                    f"indigo air india flights {origin_code} {dest_code}",
-                ]
-            )
-
-        source_layer = "web_scrape"
-        raw = _firecrawl_search(targeted_queries, limit=5)
-        flights = (
-            _normalize_flights(
-                raw,
-                fallback_currency=target_ccy,
-                default_booking=fallback_booking,
-                origin_city=origin_city,
-                destination_city=destination_city,
-                origin_code=origin_code,
-                destination_code=dest_code,
-            )
-            if raw and "[search_error:" not in raw
-            else []
-        )
-
-        if flights:
-            flights = _sanitize_flight_rows(flights, target_ccy)
-            logger.info(f"Firecrawl fallback found {len(flights)} flights")
-        else:
-            # No live data available from either source
-            source_layer = "fallback_links"
-            flights = []
-
-    if flights and source_layer in {"vector_kb", "serp_api", "web_scrape"}:
-        enriched_flights: list[dict[str, object]] = []
-        gapfill_count = 0
-        for flight in flights:
-            updated_flight = flight
-            if _flight_row_needs_gapfill(flight):
-                updated_flight = _gapfill_flight_row_with_firecrawl(
-                    flight,
-                    origin_city=origin_city,
-                    destination_city=destination_city,
-                    departure_date=departure_date,
-                    return_date=return_date,
-                    target_ccy=target_ccy,
-                )
-                if updated_flight != flight:
-                    gapfill_count += 1
-            enriched_flights.append(updated_flight)
-        if gapfill_count:
-            flights = _sanitize_flight_rows(enriched_flights, target_ccy)
-            source_layer = f"{source_layer}+firecrawl_gapfill"
-
-    payload: dict[str, object] = {
-        "query": {
-            "origin_city": origin_city,
-            "destination_city": destination_city,
-            "origin_iata": origin_code,
-            "destination_iata": dest_code,
-            "departure_date": departure_date,
-            "return_date": return_date,
-            "trip_type": trip_type,
-            "cabin_class": cabin_class,
-            "passengers": passengers,
-        },
-        "flights": flights,
-        "source_layer": source_layer,
-        "extraction_method": "serp_api"
-        if source_layer == "serp_api"
-        else "firecrawl_web_search"
-        if source_layer == "web_scrape"
-        else "booking_links",
-        "grounding": {
-            "strict_tool_grounding": True,
-            "allow_exact_schedules": source_layer in ["playwright", "web_scrape"],
-            "requires_user_verification": source_layer
-            in ["no_live_data", "fallback_links"],
-        },
-        "data_quality": {
-            "is_live_data": source_layer in ["playwright", "web_scrape"],
-            "is_real_time": source_layer == "playwright",
-            "extraction_method": source_layer,
-            "timestamp": None,
-        },
-        "notes": [
-            f"📊 Extraction method: {source_layer.upper()}",
-            ""
-            if source_layer in ["playwright", "web_scrape"]
-            else "⚠️ Live flight data unavailable",
-            ""
-            if source_layer in ["playwright", "web_scrape"]
-            else "✅ SOLUTION: Check these OFFICIAL sources for accurate current pricing:",
-            "" if source_layer in ["playwright", "web_scrape"] else "",
-            "🌐 RECOMMENDED BOOKING SITES (Real-time data):",
-            "  1. 🔵 Google Flights → https://www.google.com/travel/flights",
-            "     (Best for price comparison & flexible dates)",
-            "",
-            "  2. 🟦 Skyscanner → https://www.skyscanner.com",
-            "     (Compare multiple airlines & prices)",
-            "",
-            "  3. 🟨 Kayak → https://www.kayak.com",
-            "     (Price alerts & flexible search)",
-            "",
-            "✈️ DIRECT AIRLINE BOOKING (Often cheapest):",
-            "  • IndiGo → https://www.goindigo.in",
-            "  • Air India → https://www.airindia.com",
-            "  • SpiceJet → https://www.spicejet.com",
-            "  • Vistara → https://www.vistara.com",
-            "",
-            "🇮🇳 INDIA-SPECIFIC (for domestic flights):",
-            "  • MakeMyTrip → https://www.makemytrip.com (₹ prices)",
-            "  • OneMyTrip → https://www.onemytrip.com",
-            "",
-            "💡 PRO TIPS:",
-            "  → Prices drop Tuesday-Wednesday (avoid weekends)",
-            "  → Book 1-3 months in advance for best prices",
-            "  → Use flexible date search to find cheaper alternatives",
-            "  → Clear browser cookies before comparing prices",
-        ],
-        "recommended_live_sources": [
-            s
-            for s in [
-                "https://www.google.com/travel/flights",
-                "https://www.skyscanner.com",
-                "https://www.kayak.com",
-                "https://www.goindigo.in" if origin_code and dest_code else None,
-                "https://www.airindia.com" if origin_code and dest_code else None,
-                "https://www.makemytrip.com" if target_ccy == "INR" else None,
-            ]
-            if s is not None
-        ],
+    params = {
+        "departure_id": departure_id,
+        "arrival_id": arrival_id,
+        "outbound_date": outbound_date,
+        "currency": currency,
+        "type": type,
+        "travel_class": travel_class,
+        "show_hidden": show_hidden,
+        "deep_search": deep_search,
+        "adults": adults,
+        "sort_by": sort_by,
     }
 
-    response = json.dumps(payload, indent=2)
+    if return_date:
+        params["return_date"] = return_date
+    if multi_city_json:
+        params["multi_city_json"] = multi_city_json
+    if exclude_basic:
+        params["exclude_basic"] = exclude_basic
+    if children:
+        params["children"] = children
+    if infants_in_seat:
+        params["infants_in_seat"] = infants_in_seat
+    if infants_on_lap:
+        params["infants_on_lap"] = infants_on_lap
+    if stops is not None:
+        params["stops"] = stops
+    if exclude_airlines:
+        params["exclude_airlines"] = exclude_airlines
+    if include_airlines:
+        params["include_airlines"] = include_airlines
+    if bags:
+        params["bags"] = bags
+    if max_price:
+        params["max_price"] = max_price
+    if outbound_times:
+        params["outbound_times"] = outbound_times
+    if return_times:
+        params["return_times"] = return_times
+    if emissions:
+        params["emissions"] = emissions
+    if layover_duration:
+        params["layover_duration"] = layover_duration
+    if exclude_conns:
+        params["exclude_conns"] = exclude_conns
+    if max_duration:
+        params["max_duration"] = max_duration
+
+    result = _search_serp_flights(params)
+
+    # Truncate response slightly to save LLM context
+    if isinstance(result, dict):
+        if "best_flights" in result:
+            result["best_flights"] = result.get("best_flights", [])[:3]
+        if "other_flights" in result:
+            result["other_flights"] = result.get("other_flights", [])[:5]
+        if "search_metadata" in result:
+            for k in ["raw_html_file", "prettify_html_file"]:
+                result["search_metadata"].pop(k, None)
+
+    response_str = json.dumps(result, indent=2)
+
     persist_tool_result(
         "search_flights",
-        response,
+        response_str,
         metadata={
-            "origin": origin_city,
-            "destination": destination_city,
-            "origin_iata": origin_code,
-            "destination_iata": dest_code,
-            "departure_date": departure_date,
-            "source_layer": source_layer,
-            "extraction_method": "serp_api"
-            if source_layer == "serp_api"
-            else "firecrawl"
-            if source_layer == "web_scrape"
-            else "fallback_links",
-            "flight_count": len(flights),
+            "departure_id": departure_id,
+            "arrival_id": arrival_id,
+            "departure_date": outbound_date,
         },
-        status="ok" if source_layer in ["serp_api", "web_scrape"] else "partial",
-    )
-    _log_tool_outcome(
-        "search_flights",
-        source_layer=source_layer,
-        result_count=len(flights),
-        extraction_method="serp_api"
-        if source_layer == "serp_api"
-        else "firecrawl"
-        if source_layer == "web_scrape"
-        else "fallback_links",
-        fallback_reason="serp_api_failed"
-        if source_layer == "web_scrape"
-        else "no_live_data"
-        if source_layer == "fallback_links"
-        else None,
-        origin_city=origin_city,
-        destination_city=destination_city,
-        origin_iata=origin_code,
-        destination_iata=dest_code,
-        departure_date=departure_date,
-        return_date=return_date,
-    )
-    return response
-
-
-# ---------------------------------------------------------------------------
-# Airport terminal transit info
-# ---------------------------------------------------------------------------
-
-
-@tool
-async def get_airport_transit(
-    airport_name: str,
-    from_terminal: str,
-    to_terminal: str,
-) -> str:
-    r"""Get transit time and method between terminals at an airport.
-
-    Use this whenever a passenger has a layover and needs to change terminals
-    (e.g. Mumbai BOM T1 domestic to T2 international, CDG "Terminal 1" to "Terminal 2E").
-
-    Args:
-        airport_name: Full airport name or city (e.g. "Mumbai", "Charles de Gaulle")
-        from_terminal: Departure terminal (e.g. "T1", "Terminal 1", "domestic")
-        to_terminal: Arrival terminal (e.g. "T2", "Terminal 2E", "international")
-    """
-    logger.info(
-        "Airport transit lookup requested",
-        airport_name=airport_name,
-        from_terminal=from_terminal,
-        to_terminal=to_terminal,
-    )
-    queries = [
-        (
-            f"{airport_name} airport {from_terminal} to {to_terminal} transit time "
-            f"bus shuttle walk transfer connection how long"
-        ),
-    ]
-    raw = _firecrawl_search(queries, limit=2)
-
-    if not raw or "[search_error:" in raw:
-        # Fallback knowledge base
-        fallbacks = {
-            "pune": "Pune Airport PNQ: single integrated passenger terminal operations for most flights. If your itinerary shows T1/T2 labels from aggregators, treat as operational zones in one terminal. Internal transfer is usually 5-15 min by foot with airline check-in/security queues as main delay.",
-            "mumbai": "Mumbai BOM: T1 (domestic) to T2 (international) — free shuttle bus, ~30-45 min journey. Allow 2.5h minimum for connection.",
-            "delhi": "Delhi DEL: All terminals connected via aerotrain/walkway. T1 to T2/T3 ~20-30 min. T2↔T3 ~10 min via shuttle.",
-            "dubai": "Dubai DXB: T1/T2/T3 are separate buildings. T3 to T1 ~30 min bus. Allow 2h for connections.",
-            "paris": "Paris CDG: CDGVAL free shuttle connects T1, T2, T3. ~8-15 min between terminals. T2 has sub-terminals (A-G); same building 5-10 min walk.",
-            "london": "London LHR: T2/T3 connected via tunnel (~15 min walk). T4/T5 require Heathrow Express (15 min, free for connections).",
-            "frankfurt": "Frankfurt FRA: T1 and T2 connected via SkyLine train, 3 min. T1 A/B/C/D/Z all walkable within 10-20 min.",
-        }
-        info_res = f"Terminal transit info for {airport_name}: Allow 30-60 min for terminal changes. Check airport website for shuttle/bus details."
-        for key, info in fallbacks.items():
-            if key in airport_name.lower():
-                info_res = info
-                break
-        _log_tool_outcome(
-            "get_airport_transit",
-            source_layer="fallback",
-            fallback_reason="live_search_unavailable",
-            airport_name=airport_name,
-            from_terminal=from_terminal,
-            to_terminal=to_terminal,
-        )
-    else:
-        info_res = f"**Terminal transit at {airport_name} ({from_terminal} → {to_terminal}):**\n\n{raw}"
-        _log_tool_outcome(
-            "get_airport_transit",
-            source_layer="web_scrape",
-            airport_name=airport_name,
-            from_terminal=from_terminal,
-            to_terminal=to_terminal,
-        )
-
-    persist_tool_result(
-        "get_airport_transit",
-        f"Airport transit info for {airport_name} from {from_terminal} to {to_terminal}:\n{info_res}",
-        metadata={
-            "airport": airport_name,
-            "from_terminal": from_terminal,
-            "to_terminal": to_terminal,
-        },
-        status="ok" if raw and "[search_error:" not in raw else "fallback",
+        status="ok" if result else "missing",
     )
 
-    return info_res
-
-
-# ---------------------------------------------------------------------------
-# Ground transport search (Trains, Buses, Cabs)
-# ---------------------------------------------------------------------------
-
-
-@tool
-async def search_ground_transport(
-    origin: str,
-    destination: str,
-    date: str,
-    transport_type: str = "all",
-    currency: str | None = None,
-) -> str:
-    """Search for ground transport options (Trains, Buses, Cabs, Shuttles).
-
-    Use this for regional travel (e.g. Pune to Mumbai) or last-mile connectivity.
-    It researches services like IRCTC, RedBus, Trainline, Omio, and Uber/Ola estimates.
-    Also considers "Hotel Travel Desk" as a reliable option for local booking.
-
-    Args:
-        origin: Departure point (e.g. "Pune Station", "CDG Airport")
-        destination: Arrival point (e.g. "Mumbai South", "Paris Centre")
-        date: YYYY-MM-DD
-        transport_type: "train" | "bus" | "cab" | "all"
-        currency: Preferred currency for results (e.g. "INR", "USD")
-    """
-    logger.info(
-        "Ground transport search requested",
-        origin=origin,
-        destination=destination,
-        date=date,
-        transport_type=transport_type,
-        currency=currency,
-    )
-    type_q = (
-        f"{transport_type} " if transport_type != "all" else "train bus cab shuttle "
-    )
-    loc = _get_locality(origin)
-    target_ccy = (currency or loc["ccy"]).upper()
-    fallback_booking = "https://www.google.com/maps"
-
-    queries = [
-        f"site:irctc.co.in {type_q}{origin} to {destination} {date} fare schedule",
-        f"site:redbus.in {type_q}{origin} to {destination} {date} fare",
-        f"site:trainline.com OR site:omio.com {type_q}{origin} to {destination} {date}",
-        f"{type_q} options from {origin} to {destination} {date} schedule and price in {target_ccy}",
-    ]
-
-    source_layer = "web_scrape"
-    raw = _firecrawl_search(queries, limit=4)
-    options = (
-        _normalize_ground_options(
-            raw,
-            fallback_currency=target_ccy,
-            default_booking=fallback_booking,
-        )
-        if raw and "[search_error:" not in raw
-        else []
-    )
-
-    if not options:
-        source_layer = "vector_kb"
-        kb_query = f"ground transport {transport_type} {origin} to {destination} {date} {target_ccy}"
-        kb_raw = await get_kb_fallback(kb_query, k=4)
-        options = (
-            _normalize_ground_options(
-                kb_raw,
-                fallback_currency=target_ccy,
-                default_booking=fallback_booking,
-            )
-            if kb_raw
-            else []
-        )
-
-    if not options:
-        source_layer = "model_prior"
-        options = _build_model_prior_ground_options(target_ccy, transport_type)
-
-    if (
-        len(options) < 2
-        and "india" in origin.lower()
-        and "india" in destination.lower()
-    ):
-        source_layer = (
-            "route_fallback" if source_layer != "model_prior" else source_layer
-        )
-        fallback_options = _build_india_ground_route_fallback(
-            origin,
-            destination,
-            target_ccy,
-            transport_type,
-        )
-        existing_modes = {str(option.get("mode")) for option in options}
-        for option in fallback_options:
-            if option["mode"] not in existing_modes:
-                options.append(option)
-
-    for option in options:
-        option["currency"] = target_ccy
-        if isinstance(option.get("price"), (int, float)):
-            option["price"] = round(float(option["price"]), 2)
-
-    payload: dict[str, object] = {
-        "query": {
-            "origin": origin,
-            "destination": destination,
-            "date": date,
-            "transport_type": transport_type,
-            "currency": target_ccy,
-        },
-        "options": options,
-        "source_layer": source_layer,
-        "notes": [
-            "Ground transport times vary with traffic and seasonal demand.",
-            "If options are sparse, confirm with local operator or hotel desk.",
-        ],
-    }
-    response = json.dumps(payload, indent=2)
-
-    persist_tool_result(
-        "search_ground_transport",
-        response,
-        metadata={
-            "origin": origin,
-            "destination": destination,
-            "date": date,
-            "transport_type": transport_type,
-            "currency": target_ccy,
-            "source_layer": source_layer,
-        },
-        status="ok" if source_layer != "model_prior" else "fallback",
-    )
-    _log_tool_outcome(
-        "search_ground_transport",
-        source_layer=source_layer,
-        result_count=len(options),
-        fallback_reason=(
-            "web_search_empty"
-            if source_layer == "vector_kb"
-            else "kb_empty"
-            if source_layer == "model_prior"
-            else "sparse_route_backfill"
-            if source_layer == "route_fallback"
-            else None
-        ),
-        origin=origin,
-        destination=destination,
-        date=date,
-        transport_type=transport_type,
-    )
-
-    return response
-
-
-# ---------------------------------------------------------------------------
-# Hotel search
-# ---------------------------------------------------------------------------
+    return response_str
 
 
 @tool
 async def search_hotels(
-    destination: str,
-    check_in: str,
-    check_out: str,
-    guests: int = 2,
-    stars: int | None = None,
-    brand_preference: str | None = None,
-    budget_per_night: str | None = None,
-    currency: str | None = None,
+    q: str,
+    check_in_date: str,
+    check_out_date: str,
+    adults: str = "2",
+    children: str | None = None,
+    sort_by: str = "8",
+    hotel_classes: str | None = None,
+    rating: str | None = None,
+    amenities: str | None = None,
+    min_price: str | None = None,
+    max_price: str | None = None,
+    brands: str | None = None,
+    free_cancellation: str | None = None,
+    currency: str = "USD",
     force_live_data: bool = False,
 ) -> str:
-    """Search for hotels with smart RAG/API strategy to save credits while honoring user intent.
-
-    ✅ REAL DATA: Smart caching - checks RAG first UNLESS user asks for latest data
-
-    Strategy:
-    1) Check if user wants "latest/current/real-time" data → skip cache if yes
-    2) TRY 1: Check RAG/vector database for cached hotel data (SAVES CREDITS) *unless force_live_data=True*
-    3) TRY 2: If not found or force_live_data=True, query SERP API for live hotel offers and prices
-    4) TRY 3: Fall back to web search if SERP fails
-    5) TRY 4: Model prior fallback
-    6) Returns 3-5 hotel options as a markdown comparison with pricing, ratings
+    """Search for hotels via Google Hotels (SERP API).
+    Returns raw JSON dict with exact properties. Pass the JSON response as is to the user.
 
     Args:
-        destination: City and area (e.g. "Paris near Eiffel Tower")
-        check_in: YYYY-MM-DD
-        check_out: YYYY-MM-DD
-        guests: Number of guests
-        stars: Preferred minimum stars (3, 4, or 5)
-        brand_preference: Chain preference (e.g. "Radisson", "Marriott", "IHG")
-        budget_per_night: Budget range (e.g. "100-150")
-        currency: Preferred currency for results (e.g. "INR", "USD")
-        force_live_data: If True or user asks for "latest", skip cache and query live API
+        q: The search query, usually destination (e.g., "Paris hotels", "Bali near beach").
+        check_in_date: Check-in date in YYYY-MM-DD.
+        check_out_date: Check-out date in YYYY-MM-DD.
+        adults: Number of adults ("2").
+        children: Ages of children separated by comma ("4,6") or simply number if ages unknown.
+        sort_by: "3" (Lowest Price), "8" (Highest Rating), "1" (Relevance).
+        hotel_classes: Comma separated list of star ratings (e.g. "3,4,5" or "4").
+        rating: Minimum guest rating ("8", "8.5", "9").
+        amenities: Comma separated Google Hotel amenity IDs. E.g., "7" (free wifi), "2" (pool), "3" (free parking), "9" (free breakfast).
+        min_price: Floor price in specified currency ("100").
+        max_price: Ceiling price ("500").
+        brands: Brand identifiers (e.g. "100" or explicit names depends on Google).
+        free_cancellation: "true" to filter for free cancellation.
+        currency: Pricing currency ("USD", "INR").
+        force_live_data: Force fresh SERP API lookup bypassing internal caching.
     """
-    logger.info(
-        "Hotel search requested",
-        destination=destination,
-        check_in=check_in,
-        check_out=check_out,
-        guests=guests,
-        stars=stars,
-        brand_preference=brand_preference,
-        budget_per_night=budget_per_night,
-        currency=currency,
-    )
-    brand_q = f"{brand_preference} " if brand_preference else ""
-    stars_q = f"{stars} star " if stars else ""
-    budget_q = f"budget {budget_per_night}" if budget_per_night else ""
+    from app.core.logging import get_logger
+    from app.agents.tools.utils import persist_tool_result
 
-    loc = _get_locality(destination)
-    target_ccy = (currency or loc["ccy"]).upper()
-    fallback_booking = "https://www.google.com/travel/hotels"
-    hotels = []
-    source_layer = "no_live_data"
+    logger = get_logger(__name__)
+    logger.info(f"Hotel search requested for {q} on {check_in_date}")
 
-    # Check if user explicitly wants live data
-    skip_cache = force_live_data or _wants_live_data(destination or brand_preference)
-
-    if skip_cache:
-        logger.info("User requested live data - skipping cache to query API")
-
-    # TRY 1: Check RAG/Vector Database First (SAVES API CREDITS) - unless user wants live data
-    # ==============================================================================
-    if not skip_cache:
-        logger.debug(
-            f"Attempting RAG lookup for hotels in {destination} {check_in} to {check_out}"
-        )
-        try:
-            rag_query = (
-                f"hotels in {destination} check in {check_in} check out {check_out} "
-                f"guests {guests} stars {stars or 'any'} {brand_preference or ''} {target_ccy}"
-            )
-            rag_docs = await get_kb_fallback_docs(rag_query, k=5)
-            filtered_docs = [
-                doc
-                for doc in rag_docs
-                if _matches_requested_date(
-                    doc.metadata,
-                    requested_check_in=check_in,
-                    requested_check_out=check_out,
-                )
-                and _is_recent_cache_entry(doc.metadata, max_age_days=14)
-            ]
-            rag_raw = "\n\n---\n\n".join(doc.content for doc in filtered_docs)
-            if rag_raw:
-                hotels = _normalize_hotels(
-                    rag_raw,
-                    fallback_currency=target_ccy,
-                    destination=destination,
-                    default_booking=fallback_booking,
-                )
-                if hotels:
-                    logger.info(
-                        f"RAG database successful: found {len(hotels)} cached hotels for {check_in} to {check_out} - API CREDIT SAVED"
-                    )
-                    source_layer = "vector_kb"
-            elif rag_docs:
-                logger.debug(
-                    "Skipping hotel cache because cached dates or freshness did not match",
-                    requested_dates=_date_filter_message(
-                        requested_check_in=check_in,
-                        requested_check_out=check_out,
-                    ),
-                    cached_dates=[
-                        f"{str(doc.metadata.get('check_in') or '')} to {str(doc.metadata.get('check_out') or '')}"
-                        for doc in rag_docs[:5]
-                    ],
-                )
-        except Exception as e:
-            logger.debug(f"RAG lookup failed: {str(e)}")
-
-    # TRY 2: SERP API (real Google Hotels data, if RAG had no results or user wants live data)
-    # ==================================================================
-    if not hotels or source_layer == "no_live_data":
-        logger.debug("Attempting SERP API hotel search")
-        try:
-            hotels = _search_serp_hotels(
-                destination=destination,
-                check_in=check_in,
-                check_out=check_out,
-                guests=guests,
-                currency=target_ccy,
-            )
-            if hotels:
-                logger.info(f"SERP API successful: found {len(hotels)} hotels")
-                source_layer = "serp_api"
-            else:
-                logger.debug("SERP API returned no results")
-        except Exception as e:
-            logger.warning(f"SERP API hotel search failed: {str(e)}")
-
-    # TRY 3: Fall back to web scraping if SERP didn't work
-    # ==================================================================
-    if not hotels or source_layer == "no_live_data":
-        logger.debug("Using Firecrawl-based hotel extraction as fallback")
-        queries = [
-            f"site:google.com/travel/hotels hotels in {destination} {check_in} {check_out} {stars_q} {brand_q} {budget_q}",
-            f"site:booking.com hotels in {destination} {check_in} {check_out} {stars_q} {budget_q}",
-            f"site:agoda.com OR site:expedia.com hotels in {destination} {check_in} {check_out}",
-        ]
-        source_layer = "web_scrape"
-        raw = _firecrawl_search(queries, limit=4)
-        hotels = (
-            _normalize_hotels(
-                raw,
-                fallback_currency=target_ccy,
-                destination=destination,
-                default_booking=fallback_booking,
-            )
-            if raw and "[search_error:" not in raw
-            else []
-        )
-
-    # TRY 4: Fall back to model prior only when exact pricing is not required
-    # ==================================================================
-    if not hotels or source_layer == "no_live_data":
-        if force_live_data:
-            logger.debug(
-                "Skipping model prior hotel fallback because exact/live pricing was requested"
-            )
-            source_layer = "fallback_links"
-        else:
-            logger.debug("Using model prior hotel generation as fallback")
-            source_layer = "model_prior"
-            hotels = _build_model_prior_hotels(
-                target_ccy,
-                destination,
-                guests,
-                brand_preference,
-                budget_per_night,
-            )
-
-    if hotels and source_layer in {"vector_kb", "serp_api", "web_scrape"}:
-        enriched_hotels: list[dict[str, object]] = []
-        gapfill_count = 0
-        for hotel in hotels:
-            updated_hotel = hotel
-            if _hotel_row_needs_gapfill(hotel):
-                updated_hotel = _gapfill_hotel_row_with_firecrawl(
-                    hotel,
-                    destination=destination,
-                    check_in=check_in,
-                    check_out=check_out,
-                    target_ccy=target_ccy,
-                )
-                if updated_hotel != hotel:
-                    gapfill_count += 1
-            enriched_hotels.append(updated_hotel)
-        if gapfill_count:
-            hotels = enriched_hotels
-            source_layer = f"{source_layer}+firecrawl_gapfill"
-
-    payload: dict[str, object] = {
-        "query": {
-            "destination": destination,
-            "check_in": check_in,
-            "check_out": check_out,
-            "guests": guests,
-            "stars": stars,
-            "brand_preference": brand_preference,
-            "budget_per_night": budget_per_night,
-            "currency": target_ccy,
-        },
-        "hotels": hotels,
-        "source_layer": source_layer,
-        "notes": [
-            "Rates can change by availability and cancellation terms.",
-            "Verify final taxes/fees on booking page.",
-        ],
+    params = {
+        "q": q,
+        "check_in_date": check_in_date,
+        "check_out_date": check_out_date,
+        "currency": currency,
+        "adults": adults,
+        "sort_by": sort_by,
     }
-    response = json.dumps(payload, indent=2)
+
+    if children:
+        params["children"] = children
+    if hotel_classes:
+        params["hotel_classes"] = hotel_classes
+    if rating:
+        params["rating"] = rating
+    if amenities:
+        params["amenities"] = amenities
+    if min_price:
+        params["min_price"] = min_price
+    if max_price:
+        params["max_price"] = max_price
+    if brands:
+        params["brands"] = brands
+    if free_cancellation:
+        params["free_cancellation"] = free_cancellation
+
+    result = _search_serp_hotels(params)
+
+    if isinstance(result, dict):
+        if "properties" in result:
+            result["properties"] = result["properties"][:6]  # Return top 6
+        if "search_metadata" in result:
+            for k in ["raw_html_file", "prettify_html_file"]:
+                result["search_metadata"].pop(k, None)
+
+    response_str = json.dumps(result, indent=2)
 
     persist_tool_result(
         "search_hotels",
-        response,
+        response_str,
         metadata={
-            "destination": destination,
-            "check_in": check_in,
-            "check_out": check_out,
-            "guests": guests,
-            "currency": target_ccy,
-            "source_layer": source_layer,
+            "destination": q,
+            "check_in": check_in_date,
+            "check_out": check_out_date,
         },
-        status="ok" if source_layer != "model_prior" else "fallback",
-    )
-    _log_tool_outcome(
-        "search_hotels",
-        source_layer=source_layer,
-        result_count=len(hotels),
-        fallback_reason=(
-            "web_search_empty"
-            if source_layer == "vector_kb"
-            else "kb_empty"
-            if source_layer == "model_prior"
-            else None
-        ),
-        destination=destination,
-        check_in=check_in,
-        check_out=check_out,
-        guests=guests,
+        status="ok" if result else "missing",
     )
 
-    return response
-
-
-# ---------------------------------------------------------------------------
-# Place details — tickets, hours, local transit
-# ---------------------------------------------------------------------------
+    return response_str
 
 
 @tool
@@ -2227,3 +1551,241 @@ async def get_place_details(
     )
 
     return results_str
+
+
+# Ground transport search (Trains, Buses, Cabs)
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def search_ground_transport(
+    origin: str,
+    destination: str,
+    date: str,
+    transport_type: str = "all",
+    currency: str | None = None,
+) -> str:
+    """Search for ground transport options (Trains, Buses, Cabs, Shuttles).
+
+    Use this for regional travel (e.g. Pune to Mumbai) or last-mile connectivity.
+    It researches services like IRCTC, RedBus, Trainline, Omio, and Uber/Ola estimates.
+    Also considers "Hotel Travel Desk" as a reliable option for local booking.
+
+    Args:
+        origin: Departure point (e.g. "Pune Station", "CDG Airport")
+        destination: Arrival point (e.g. "Mumbai South", "Paris Centre")
+        date: YYYY-MM-DD
+        transport_type: "train" | "bus" | "cab" | "all"
+        currency: Preferred currency for results (e.g. "INR", "USD")
+    """
+    logger.info(
+        "Ground transport search requested",
+        origin=origin,
+        destination=destination,
+        date=date,
+        transport_type=transport_type,
+        currency=currency,
+    )
+    type_q = (
+        f"{transport_type} " if transport_type != "all" else "train bus cab shuttle "
+    )
+    loc = _get_locality(origin)
+    target_ccy = (currency or loc["ccy"]).upper()
+    fallback_booking = "https://www.google.com/maps"
+
+    queries = [
+        f"site:irctc.co.in {type_q}{origin} to {destination} {date} fare schedule",
+        f"site:redbus.in {type_q}{origin} to {destination} {date} fare",
+        f"site:trainline.com OR site:omio.com {type_q}{origin} to {destination} {date}",
+        f"{type_q} options from {origin} to {destination} {date} schedule and price in {target_ccy}",
+    ]
+
+    source_layer = "web_scrape"
+    raw = _firecrawl_search(queries, limit=4)
+    options = (
+        _normalize_ground_options(
+            raw,
+            fallback_currency=target_ccy,
+            default_booking=fallback_booking,
+        )
+        if raw and "[search_error:" not in raw
+        else []
+    )
+
+    if not options:
+        source_layer = "vector_kb"
+        kb_query = f"ground transport {transport_type} {origin} to {destination} {date} {target_ccy}"
+        from app.agents.rag.retriever import get_kb_fallback
+
+        kb_raw = await get_kb_fallback(kb_query, k=4)
+        options = (
+            _normalize_ground_options(
+                kb_raw,
+                fallback_currency=target_ccy,
+                default_booking=fallback_booking,
+            )
+            if kb_raw
+            else []
+        )
+
+    if not options:
+        source_layer = "model_prior"
+        options = _build_model_prior_ground_options(target_ccy, transport_type)
+
+    if (
+        len(options) < 2
+        and "india" in origin.lower()
+        and "india" in destination.lower()
+    ):
+        source_layer = (
+            "route_fallback" if source_layer != "model_prior" else source_layer
+        )
+        fallback_options = _build_india_ground_route_fallback(
+            origin,
+            destination,
+            target_ccy,
+            transport_type,
+        )
+        existing_modes = {str(option.get("mode")) for option in options}
+        for option in fallback_options:
+            if option["mode"] not in existing_modes:
+                options.append(option)
+
+    for option in options:
+        option["currency"] = target_ccy
+        if isinstance(option.get("price"), (int, float)):
+            option["price"] = round(float(option["price"]), 2)
+
+    payload: dict[str, object] = {
+        "query": {
+            "origin": origin,
+            "destination": destination,
+            "date": date,
+            "transport_type": transport_type,
+            "currency": target_ccy,
+        },
+        "options": options,
+        "source_layer": source_layer,
+        "notes": [
+            "Ground transport times vary with traffic and seasonal demand.",
+            "If options are sparse, confirm with local operator or hotel desk.",
+        ],
+    }
+    response = json.dumps(payload, indent=2)
+
+    persist_tool_result(
+        "search_ground_transport",
+        response,
+        metadata={
+            "origin": origin,
+            "destination": destination,
+            "date": date,
+            "transport_type": transport_type,
+            "currency": target_ccy,
+            "source_layer": source_layer,
+        },
+        status="ok" if source_layer != "model_prior" else "fallback",
+    )
+    _log_tool_outcome(
+        "search_ground_transport",
+        source_layer=source_layer,
+        result_count=len(options),
+        fallback_reason=(
+            "web_search_empty"
+            if source_layer == "vector_kb"
+            else "kb_empty"
+            if source_layer == "model_prior"
+            else "sparse_route_backfill"
+            if source_layer == "route_fallback"
+            else None
+        ),
+        origin=origin,
+        destination=destination,
+        date=date,
+        transport_type=transport_type,
+    )
+
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Airport transit
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def get_airport_transit(
+    airport_name: str,
+    from_terminal: str,
+    to_terminal: str,
+) -> str:
+    r"""Get transit time and method between terminals at an airport.
+
+    Use this whenever a passenger has a layover and needs to change terminals
+    (e.g. Mumbai BOM T1 domestic to T2 international, CDG "Terminal 1" to "Terminal 2E").
+
+    Args:
+        airport_name: Full airport name or city (e.g. "Mumbai", "Charles de Gaulle")
+        from_terminal: Departure terminal (e.g. "T1", "Terminal 1", "domestic")
+        to_terminal: Arrival terminal (e.g. "T2", "Terminal 2E", "international")
+    """
+    logger.info(
+        "Airport transit lookup requested",
+        airport_name=airport_name,
+        from_terminal=from_terminal,
+        to_terminal=to_terminal,
+    )
+    queries = [
+        (
+            f"{airport_name} airport {from_terminal} to {to_terminal} transit time "
+            f"bus shuttle walk transfer connection how long"
+        ),
+    ]
+    raw = _firecrawl_search(queries, limit=2)
+
+    if not raw or "[search_error:" in raw:
+        # Fallback knowledge base
+        fallbacks = {
+            "pune": "Pune Airport PNQ: single integrated passenger terminal operations for most flights. If your itinerary shows T1/T2 labels from aggregators, treat as operational zones in one terminal. Internal transfer is usually 5-15 min by foot with airline check-in/security queues as main delay.",
+            "mumbai": "Mumbai BOM: T1 (domestic) to T2 (international) — free shuttle bus, ~30-45 min journey. Allow 2.5h minimum for connection.",
+            "delhi": "Delhi DEL: All terminals connected via aerotrain/walkway. T1 to T2/T3 ~20-30 min. T2↔T3 ~10 min via shuttle.",
+            "dubai": "Dubai DXB: T1/T2/T3 are separate buildings. T3 to T1 ~30 min bus. Allow 2h for connections.",
+            "paris": "Paris CDG: CDGVAL free shuttle connects T1, T2, T3. ~8-15 min between terminals. T2 has sub-terminals (A-G); same building 5-10 min walk.",
+            "london": "London LHR: T2/T3 connected via tunnel (~15 min walk). T4/T5 require Heathrow Express (15 min, free for connections).",
+            "frankfurt": "Frankfurt FRA: T1 and T2 connected via SkyLine train, 3 min. T1 A/B/C/D/Z all walkable within 10-20 min.",
+        }
+        info_res = f"Terminal transit info for {airport_name}: Allow 30-60 min for terminal changes. Check airport website for shuttle/bus details."
+        for key, info in fallbacks.items():
+            if key in airport_name.lower():
+                info_res = info
+                break
+        _log_tool_outcome(
+            "get_airport_transit",
+            source_layer="fallback",
+            fallback_reason="live_search_unavailable",
+            airport_name=airport_name,
+            from_terminal=from_terminal,
+            to_terminal=to_terminal,
+        )
+    else:
+        info_res = f"**Terminal transit at {airport_name} ({from_terminal} → {to_terminal}):**\n\n{raw}"
+        _log_tool_outcome(
+            "get_airport_transit",
+            source_layer="web_scrape",
+            airport_name=airport_name,
+            from_terminal=from_terminal,
+            to_terminal=to_terminal,
+        )
+
+    persist_tool_result(
+        "get_airport_transit",
+        f"Airport transit info for {airport_name} from {from_terminal} to {to_terminal}:\n{info_res}",
+        metadata={
+            "airport": airport_name,
+            "from_terminal": from_terminal,
+            "to_terminal": to_terminal,
+        },
+        status="ok" if raw and "[search_error:" not in raw else "fallback",
+    )
+
+    return info_res

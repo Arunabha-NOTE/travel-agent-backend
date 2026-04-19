@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Annotated, Any, AsyncGenerator, Sequence, TypedDict, Literal
@@ -23,8 +24,11 @@ from app.agents.prompts import (
 )
 from app.agents.tool_suite import AGENT_TOOLS
 from app.agents.langchain_agent import (
+    _clean_stage_value,
     _extract_itinerary,
+    _extract_itinerary_tool_snapshot,
     _extract_planning_stage,
+    _inject_panel_state,
     _is_finalize_request,
     _recover_itinerary_snapshot,
     _build_enforced_preflight_context,
@@ -289,6 +293,7 @@ async def run_langgraph_agent(
     last_message_content = ""
     planner_candidates: list[str] = []
     itinerary_data = None
+    pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
     yielded_preflight_steps: set[str] = set()
 
     def _score_candidate(text: str) -> int:
@@ -357,6 +362,94 @@ async def run_langgraph_agent(
                 step_label = _tool_step_label(tool_name, tool_input)
                 step_token = f"[STEP:{step_label}]"
                 yield step_token
+
+                if tool_name == "update_itinerary_panel":
+                    (
+                        tool_itinerary,
+                        tool_stage,
+                        tool_expected_days,
+                    ) = _extract_itinerary_tool_snapshot(tool_input)
+                    if tool_itinerary is not None:
+                        pending_tool_snapshot = (
+                            tool_itinerary,
+                            tool_stage,
+                            tool_expected_days,
+                        )
+
+            elif kind == "on_tool_end":
+                tool_name = event.get("name", "")
+                tool_output = event.get("data", {}).get("output")
+                if tool_name == "update_itinerary_panel" and pending_tool_snapshot:
+                    try:
+                        (
+                            tool_itinerary,
+                            tool_stage,
+                            tool_expected_days,
+                        ) = pending_tool_snapshot
+
+                        output_text = _message_content_to_text(tool_output)
+                        if output_text.strip().startswith("{"):
+                            try:
+                                parsed_tool_output = json.loads(output_text)
+                                tool_stage = (
+                                    _clean_stage_value(parsed_tool_output.get("stage"))
+                                    or tool_stage
+                                )
+                            except json.JSONDecodeError:
+                                pass
+
+                        tool_snapshot = _inject_panel_state(
+                            tool_itinerary,
+                            stage=tool_stage,
+                            expected_total_days=tool_expected_days,
+                            source="update_itinerary_panel",
+                            status="captured",
+                        )
+                        itinerary_data = tool_snapshot
+
+                        (
+                            last_persisted_stage,
+                            last_persisted_itinerary_signature,
+                            normalized_snapshot,
+                            wrote_progress,
+                        ) = await _persist_progress_snapshot(
+                            db,
+                            chat_id,
+                            parsed_stage=tool_stage,
+                            parsed_itinerary=tool_snapshot,
+                            destination_hint=_infer_destination_hint(
+                                dynamic_context,
+                                json.dumps(tool_itinerary, default=str)[:2000],
+                                user_message,
+                            ),
+                            context_text="\n".join(
+                                [
+                                    dynamic_context,
+                                    user_message,
+                                    json.dumps(tool_itinerary, default=str)[:6000],
+                                ]
+                            ),
+                            last_stage=last_persisted_stage,
+                            last_itinerary_signature=last_persisted_itinerary_signature,
+                        )
+                        if normalized_snapshot:
+                            itinerary_data = normalized_snapshot
+                        if wrote_progress:
+                            logger.info(
+                                "Structured itinerary snapshot persisted (langgraph)",
+                                chat_id=chat_id,
+                                stage=last_persisted_stage,
+                                itinerary_signature=last_persisted_itinerary_signature,
+                            )
+                    except Exception as snapshot_err:
+                        await db.rollback()
+                        logger.warning(
+                            "Failed to persist structured itinerary tool snapshot (langgraph)",
+                            chat_id=chat_id,
+                            error=str(snapshot_err),
+                        )
+                    finally:
+                        pending_tool_snapshot = None
 
             # LLM Streaming tokens
             elif kind == "on_chat_model_stream":

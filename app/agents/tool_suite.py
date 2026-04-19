@@ -1,9 +1,9 @@
 """Shared agent tool suite used by both LangChain and LangGraph agents."""
 
-from app.agents.rag.retriever import rag_travel_knowledge
 from app.agents.tools.geocoding import geocode_place
-from app.agents.tools.search import firecrawl_search
+from app.agents.tools.search import search_web, scrape_website
 from app.agents.tools.time import get_current_time
+from app.agents.tools.itinerary import update_itinerary_panel
 from app.agents.tools.travel import (
     get_airport_transit,
     get_place_details,
@@ -21,9 +21,10 @@ AGENT_TOOLS = [
     get_airport_transit,
     search_hotels,
     get_place_details,
+    update_itinerary_panel,
     # General research
-    rag_travel_knowledge,
-    firecrawl_search,
+    search_web,
+    scrape_website,
     # Logistics
     geocode_place,
     get_weather,

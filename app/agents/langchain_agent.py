@@ -232,6 +232,105 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _clean_stage_value(stage: Any) -> str | None:
+    if stage is None:
+        return None
+    value = str(stage).strip().lower()
+    return value or None
+
+
+def _normalize_expected_total_days(value: Any) -> int | None:
+    normalized = _safe_int(value, 0)
+    return normalized if normalized > 0 else None
+
+
+def _build_panel_state(
+    *,
+    itinerary_data: dict[str, Any],
+    panel_state: dict[str, Any] | None = None,
+    stage: str | None = None,
+    expected_total_days: int | None = None,
+    source: str = "unknown",
+    status: str | None = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    incoming = panel_state if isinstance(panel_state, dict) else {}
+    actual_days = _itinerary_day_count(itinerary_data)
+
+    expected = _normalize_expected_total_days(expected_total_days)
+    if expected is None:
+        expected = _normalize_expected_total_days(incoming.get("expected_total_days"))
+    if expected is None:
+        expected = _normalize_expected_total_days(itinerary_data.get("total_days"))
+
+    if expected is not None:
+        is_partial = actual_days < expected
+        completion_ratio = round(actual_days / expected, 3) if expected > 0 else 0.0
+    else:
+        is_partial = False
+        completion_ratio = 1.0 if actual_days > 0 else 0.0
+
+    raw_status = (
+        str(
+            incoming.get("status")
+            or status
+            or ("partial" if is_partial else "complete")
+        )
+        .strip()
+        .lower()
+    )
+    if raw_status not in {"captured", "partial", "complete", "failed"}:
+        raw_status = "partial" if is_partial else "complete"
+
+    normalized_stage = _clean_stage_value(stage) or _clean_stage_value(
+        incoming.get("stage")
+    )
+
+    note = (
+        str(message).strip()
+        if isinstance(message, str)
+        else str(incoming.get("message") or "").strip()
+    )
+
+    payload: dict[str, Any] = {
+        "status": raw_status,
+        "stage": normalized_stage,
+        "expected_total_days": expected,
+        "actual_days": actual_days,
+        "completion_ratio": completion_ratio,
+        "is_partial": is_partial,
+        "source": str(incoming.get("source") or source).strip() or source,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if note:
+        payload["message"] = note
+    return payload
+
+
+def _inject_panel_state(
+    itinerary_data: dict[str, Any],
+    *,
+    stage: str | None,
+    expected_total_days: int | None,
+    source: str,
+    status: str | None = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    snapshot = dict(itinerary_data)
+    snapshot["panel_state"] = _build_panel_state(
+        itinerary_data=snapshot,
+        panel_state=snapshot.get("panel_state")
+        if isinstance(snapshot.get("panel_state"), dict)
+        else None,
+        stage=stage,
+        expected_total_days=expected_total_days,
+        source=source,
+        status=status,
+        message=message,
+    )
+    return snapshot
+
+
 def _destination_center(destination: str) -> tuple[float, float]:
     lowered = destination.lower()
     for key, coords in _DESTINATION_COORDS.items():
@@ -434,15 +533,34 @@ def _normalize_flight_leg(
         segments.append(normalized_segment)
 
     price_per_person = _safe_float(leg.get("price_per_person"))
+    if price_per_person is None:
+        price_per_person = _safe_float(leg.get("price_per_person_inr"))
+    if price_per_person is None:
+        total_for_two = _safe_float(
+            leg.get("total_for_two") or leg.get("total_for_two_inr")
+        )
+        if total_for_two is not None:
+            price_per_person = round(total_for_two / 2, 2)
+
+    leg_currency = str(leg.get("currency") or "").strip()
+    if not leg_currency and (
+        leg.get("price_per_person_inr") is not None
+        or leg.get("total_for_two_inr") is not None
+    ):
+        leg_currency = "INR"
+
     if meaningful_segment_count == 0 and price_per_person is None:
         return None
 
     return {
         "segments": segments,
-        "total_duration_mins": _safe_int(leg.get("total_duration_mins"), 0) or None,
+        "total_duration_mins": _safe_int(
+            leg.get("total_duration_mins") or leg.get("total_duration"), 0
+        )
+        or None,
         "cabin_class": leg.get("cabin_class") or "economy",
         "price_per_person": price_per_person,
-        "currency": leg.get("currency") or currency,
+        "currency": leg_currency or currency,
     }
 
 
@@ -640,12 +758,34 @@ def _normalize_itinerary_for_ui(
         else {}
     )
     flights_total = _safe_float(estimated_budget.get("flights_total"))
+    if flights_total is None:
+        flights_total = _safe_float(estimated_budget.get("flights_total_inr"))
+
     accommodation_total = _safe_float(estimated_budget.get("accommodation_total"))
+    if accommodation_total is None:
+        accommodation_total = _safe_float(
+            estimated_budget.get("accommodation_total_inr")
+        )
+
     activities_total = _safe_float(estimated_budget.get("activities_total"))
+    if activities_total is None:
+        activities_total = _safe_float(estimated_budget.get("activities_total_inr"))
+
     food_per_day = _safe_float(estimated_budget.get("food_per_day"))
+    if food_per_day is None:
+        food_extra = _safe_float(estimated_budget.get("food_extra_inr"))
+        if food_extra is not None and total_days > 0:
+            food_per_day = round(food_extra / max(total_days, 1), 2)
+
     local_transport_per_day = _safe_float(
         estimated_budget.get("local_transport_per_day")
     )
+    if local_transport_per_day is None:
+        local_transport_total = _safe_float(estimated_budget.get("local_transport_inr"))
+        if local_transport_total is not None and total_days > 0:
+            local_transport_per_day = round(
+                local_transport_total / max(total_days, 1), 2
+            )
 
     if flights_total is None:
         outbound_price = (
@@ -678,6 +818,12 @@ def _normalize_itinerary_for_ui(
 
     total_estimate = _safe_float(estimated_budget.get("total_estimate"))
     if total_estimate is None:
+        total_estimate = _safe_float(estimated_budget.get("total_estimate_inr"))
+    if total_estimate is None:
+        total_estimate = _safe_float(
+            estimated_budget.get("total_estimate_with_savings_inr")
+        )
+    if total_estimate is None:
         total_estimate = (
             (flights_total or 0)
             + (accommodation_total or 0)
@@ -685,6 +831,29 @@ def _normalize_itinerary_for_ui(
             + (food_per_day or 0) * max(total_days, 1)
             + (local_transport_per_day or 0) * max(total_days, 1)
         )
+
+    budget_currency = str(estimated_budget.get("currency") or "").strip()
+    if not budget_currency and any(
+        estimated_budget.get(key) is not None
+        for key in [
+            "flights_total_inr",
+            "accommodation_total_inr",
+            "activities_total_inr",
+            "food_extra_inr",
+            "local_transport_inr",
+            "total_estimate_inr",
+            "total_estimate_with_savings_inr",
+        ]
+    ):
+        budget_currency = "INR"
+
+    panel_state = _build_panel_state(
+        itinerary_data={"days": days, "total_days": total_days},
+        panel_state=data.get("panel_state")
+        if isinstance(data.get("panel_state"), dict)
+        else None,
+        source="normalized_itinerary",
+    )
 
     normalized = {
         "destination": destination,
@@ -697,15 +866,33 @@ def _normalize_itinerary_for_ui(
         "flights": flights,
         "hotel": hotel,
         "days": days,
+        "panel_state": panel_state,
         "tips": tips,
         "estimated_budget": {
-            "currency": estimated_budget.get("currency") or currency,
+            "currency": budget_currency or currency,
             "flights_total": flights_total,
             "accommodation_total": accommodation_total,
             "activities_total": activities_total,
             "food_per_day": food_per_day,
             "local_transport_per_day": local_transport_per_day,
             "total_estimate": total_estimate,
+            "flights_total_inr": _safe_float(estimated_budget.get("flights_total_inr")),
+            "accommodation_total_inr": _safe_float(
+                estimated_budget.get("accommodation_total_inr")
+            ),
+            "activities_total_inr": _safe_float(
+                estimated_budget.get("activities_total_inr")
+            ),
+            "food_extra_inr": _safe_float(estimated_budget.get("food_extra_inr")),
+            "local_transport_inr": _safe_float(
+                estimated_budget.get("local_transport_inr")
+            ),
+            "total_estimate_inr": _safe_float(
+                estimated_budget.get("total_estimate_inr")
+            ),
+            "total_estimate_with_savings_inr": _safe_float(
+                estimated_budget.get("total_estimate_with_savings_inr")
+            ),
             "accommodation_per_night": _safe_float(
                 estimated_budget.get("accommodation_per_night")
             )
@@ -937,6 +1124,44 @@ def _tool_output_to_text(output: Any) -> str:
     if isinstance(output, str):
         return output
     return str(output or "")
+
+
+def _extract_itinerary_tool_snapshot(
+    tool_input: Any,
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
+    payload: Any = tool_input
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None, None, None
+
+    if not isinstance(payload, dict):
+        return None, None, None
+
+    if isinstance(payload.get("kwargs"), dict):
+        payload = payload["kwargs"]
+
+    itinerary_data: dict[str, Any] | None = None
+    if isinstance(payload.get("itinerary_data"), dict):
+        itinerary_data = payload["itinerary_data"]
+    elif "days" in payload and "destination" in payload:
+        itinerary_data = payload
+
+    if itinerary_data is None:
+        return None, None, None
+
+    stage = _clean_stage_value(payload.get("stage"))
+    expected_total_days = _normalize_expected_total_days(
+        payload.get("expected_total_days")
+    )
+    if expected_total_days is None:
+        expected_total_days = _normalize_expected_total_days(
+            itinerary_data.get("total_days")
+        )
+
+    return itinerary_data, stage, expected_total_days
 
 
 def _classify_tool_output(tool_name: str, output_text: str) -> str:
@@ -1282,6 +1507,60 @@ def _merge_budget(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
     return merged
 
 
+def _merge_panel_state(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    merged_total_days: int,
+    merged_actual_days: int,
+) -> dict[str, Any]:
+    merged = dict(existing)
+
+    for key in ["stage", "source", "message"]:
+        value = str(incoming.get(key) or "").strip()
+        if value:
+            merged[key] = value
+
+    expected = _normalize_expected_total_days(incoming.get("expected_total_days"))
+    if expected is None:
+        expected = _normalize_expected_total_days(existing.get("expected_total_days"))
+    if expected is None:
+        expected = merged_total_days if merged_total_days > 0 else None
+
+    incoming_actual = _safe_int(incoming.get("actual_days"), 0)
+    existing_actual = _safe_int(existing.get("actual_days"), 0)
+    actual_days = max(incoming_actual, existing_actual, merged_actual_days)
+
+    if expected is not None:
+        is_partial = actual_days < expected
+        completion_ratio = round(actual_days / expected, 3) if expected > 0 else 0.0
+    else:
+        is_partial = False
+        completion_ratio = 1.0 if actual_days > 0 else 0.0
+
+    incoming_status = str(incoming.get("status") or "").strip().lower()
+    existing_status = str(existing.get("status") or "").strip().lower()
+    status = (
+        incoming_status or existing_status or ("partial" if is_partial else "complete")
+    )
+    if status not in {"captured", "partial", "complete", "failed"}:
+        status = "partial" if is_partial else "complete"
+
+    merged.update(
+        {
+            "status": status,
+            "expected_total_days": expected,
+            "actual_days": actual_days,
+            "completion_ratio": completion_ratio,
+            "is_partial": is_partial,
+            "updated_at": str(
+                incoming.get("updated_at") or datetime.now(timezone.utc).isoformat()
+            ),
+        }
+    )
+    return merged
+
+
 def _merge_days(
     existing_days: list[dict[str, Any]], incoming_days: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1386,6 +1665,24 @@ def _merge_itinerary_data(
     merged["total_days"] = max(
         existing_total_days, incoming_total_days, len(merged_days)
     )
+
+    existing_panel_state = (
+        existing.get("panel_state")
+        if isinstance(existing.get("panel_state"), dict)
+        else {}
+    )
+    incoming_panel_state = (
+        incoming.get("panel_state")
+        if isinstance(incoming.get("panel_state"), dict)
+        else {}
+    )
+    if existing_panel_state or incoming_panel_state or merged_days:
+        merged["panel_state"] = _merge_panel_state(
+            existing_panel_state,
+            incoming_panel_state,
+            merged_total_days=merged["total_days"],
+            merged_actual_days=len(merged_days),
+        )
 
     # Keep union of tips and warnings.
     tips_existing = (
@@ -1660,6 +1957,7 @@ async def run_langchain_agent(
     last_message_content = ""
     llm_candidates: list[str] = []
     itinerary_data: dict[str, Any] | None = None
+    pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
     prompt_tokens = 0
     completion_tokens = 0
     yielded_preflight_steps: set[str] = set()
@@ -1688,6 +1986,19 @@ async def run_langchain_agent(
                 full_response += step_token
                 yield step_token
 
+                if tool_name == "update_itinerary_panel":
+                    (
+                        tool_itinerary,
+                        tool_stage,
+                        tool_expected_days,
+                    ) = _extract_itinerary_tool_snapshot(tool_input)
+                    if tool_itinerary is not None:
+                        pending_tool_snapshot = (
+                            tool_itinerary,
+                            tool_stage,
+                            tool_expected_days,
+                        )
+
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
                 tool_output = event.get("data", {}).get("output")
@@ -1712,6 +2023,83 @@ async def run_langchain_agent(
                     )
                 else:
                     logger.info("LangChain tool completed", **log_payload)
+
+                if tool_name == "update_itinerary_panel" and pending_tool_snapshot:
+                    try:
+                        (
+                            tool_itinerary,
+                            tool_stage,
+                            tool_expected_days,
+                        ) = pending_tool_snapshot
+
+                        if output_text.strip().startswith("{"):
+                            try:
+                                parsed_tool_output = json.loads(output_text)
+                                tool_stage = (
+                                    _clean_stage_value(parsed_tool_output.get("stage"))
+                                    or tool_stage
+                                )
+                                tool_expected_days = (
+                                    _normalize_expected_total_days(
+                                        parsed_tool_output.get("expected_total_days")
+                                    )
+                                    or tool_expected_days
+                                )
+                            except json.JSONDecodeError:
+                                pass
+
+                        tool_snapshot = _inject_panel_state(
+                            tool_itinerary,
+                            stage=tool_stage,
+                            expected_total_days=tool_expected_days,
+                            source="update_itinerary_panel",
+                            status="captured",
+                        )
+                        itinerary_data = tool_snapshot
+
+                        (
+                            last_persisted_stage,
+                            last_persisted_itinerary_signature,
+                            normalized_snapshot,
+                            wrote_progress,
+                        ) = await _persist_progress_snapshot(
+                            db,
+                            chat_id,
+                            parsed_stage=tool_stage,
+                            parsed_itinerary=tool_snapshot,
+                            destination_hint=_infer_destination_hint(
+                                dynamic_sys_prompt,
+                                json.dumps(tool_itinerary, default=str)[:2000],
+                                user_message,
+                            ),
+                            context_text="\n".join(
+                                [
+                                    dynamic_sys_prompt,
+                                    user_message,
+                                    json.dumps(tool_itinerary, default=str)[:6000],
+                                ]
+                            ),
+                            last_stage=last_persisted_stage,
+                            last_itinerary_signature=last_persisted_itinerary_signature,
+                        )
+                        if normalized_snapshot:
+                            itinerary_data = normalized_snapshot
+                        if wrote_progress:
+                            logger.info(
+                                "Structured itinerary snapshot persisted (langchain)",
+                                chat_id=chat_id,
+                                stage=last_persisted_stage,
+                                itinerary_signature=last_persisted_itinerary_signature,
+                            )
+                    except Exception as snapshot_err:
+                        await db.rollback()
+                        logger.warning(
+                            "Failed to persist structured itinerary tool snapshot (langchain)",
+                            chat_id=chat_id,
+                            error=str(snapshot_err),
+                        )
+                    finally:
+                        pending_tool_snapshot = None
 
             # Stream LLM text tokens
             elif kind == "on_chat_model_stream":
@@ -1965,12 +2353,14 @@ def _tool_step_label(tool_name: str, tool_input: dict) -> str:
         "get_airport_transit": lambda i: f"🛫 Checking terminal transit at {i.get('airport_name', '')}...",
         "search_hotels": lambda i: f"🏨 Finding hotels in {i.get('destination', '')}...",
         "get_place_details": lambda i: f"📍 Getting details for {i.get('place_name', '')}...",
-        "firecrawl_search": lambda i: f"🔍 Searching: {i.get('query', '')[:50]}...",
+        "search_web": lambda i: f"🔍 Searching: {i.get('query', '')[:50]}...",
+        "scrape_website": lambda i: f"🌐 Scraping: {i.get('url', '')[:50]}...",
         "geocode_place": lambda i: f"📍 Locating {i.get('place_name', '')}...",
         "get_weather": lambda i: "🌤️ Checking weather forecast...",
         "rag_travel_knowledge": lambda i: f"📚 Checking knowledge base for {i.get('query', '')[:40]}...",
         "get_current_time": lambda i: "🕒 Synchronizing clock...",
         "search_ground_transport": lambda i: f"🚆 Researching trains/buses to {i.get('destination', '')}...",
+        "update_itinerary_panel": lambda i: "🧩 Updating itinerary panel snapshot...",
     }
     fn = labels.get(tool_name)
     if fn:
