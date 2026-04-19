@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,21 +23,17 @@ class Settings(BaseSettings):
     OTEL_TRACES_EXPORTER: str = "none"
 
     # === Database Configuration ===
-    SQLALCHEMY_DATABASE_URI: str = (
-        "postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot"
-    )
+    SQLALCHEMY_DATABASE_URI: str
     # Sync URI for pgvector / LangChain (psycopg2)
-    SQLALCHEMY_SYNC_DATABASE_URI: str = (
-        "postgresql+psycopg2://chatbot:chatbot@localhost:5432/chatbot"
-    )
+    SQLALCHEMY_SYNC_DATABASE_URI: str
 
     # === LLM Configuration (Minimax m2.7 via OpenAI-compat) ===
-    LLM_API_KEY: str = "changeme"
+    LLM_API_KEY: str
     LLM_BASE_URL: str = "https://api.minimax.io/v1"
     LLM_MODEL: str = "minimax-m2.7"
 
     # === Firecrawl Configuration ===
-    FIRECRAWL_API_KEY: str = "changeme"
+    FIRECRAWL_API_KEY: str
 
     # === SERP API Configuration ===
     SERP_API_KEY: str | None = None
@@ -45,7 +43,7 @@ class Settings(BaseSettings):
     SERP_HL: str = "en"
 
     # === Google Maps Configuration ===
-    GOOGLE_MAPS_API_KEY: str = "changeme"
+    GOOGLE_MAPS_API_KEY: str
 
     # === Vector Store Configuration ===
     PGVECTOR_COLLECTION: str = "travel_knowledge"
@@ -56,23 +54,14 @@ class Settings(BaseSettings):
     API_VERSION: str = "0.1.0"
 
     # === Security Configuration ===
-    JWT_SECRET: str = "your-secret-key-change-in-production"
+    JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
     JWT_REFRESH_EXPIRATION_DAYS: int = 30
     PASSWORD_RESET_EXPIRATION_MINUTES: int = 30
 
     # === CORS Configuration ===
-    CORS_ORIGINS: list[str] = [
-        "http://localhost",
-        "http://127.0.0.1",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ]
+    CORS_ORIGINS: list[str]
 
     # === Application Environment ===
     ENVIRONMENT: str = "development"
@@ -91,20 +80,14 @@ class Settings(BaseSettings):
 
 
 # Singleton instance - used throughout the app
-try:
-    settings = Settings()
-except Exception:
-    # Fallback: Create settings with defaults if environment validation fails
-    import os
+if "DEBUG" in os.environ and os.environ["DEBUG"].lower() not in (
+    "true",
+    "false",
+    "0",
+    "1",
+    "yes",
+    "no",
+):
+    os.environ["DEBUG"] = "false"
 
-    # Clear DEBUG environment variable if it has invalid value
-    if "DEBUG" in os.environ and os.environ["DEBUG"].lower() not in (
-        "true",
-        "false",
-        "0",
-        "1",
-        "yes",
-        "no",
-    ):
-        os.environ["DEBUG"] = "false"
-    settings = Settings()
+settings = Settings()

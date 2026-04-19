@@ -147,3 +147,8 @@ def metrics():
 async def root():
     logger.info("Application is running", __path__="/", status="200", method="GET")
     return {"message": "Hello World"}
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    return {"status": "ok"}
