@@ -92,3 +92,22 @@ Observability endpoints and config:
 - Run tests: `pytest`
 - Lint/format: `ruff check .`
 - Pre-commit hooks: `pre-commit install`
+
+## LangSmith Tracing and Agent Evaluation
+
+This backend includes a ready-to-run LangSmith evaluation harness for both agent runtimes.
+
+1. Enable tracing environment variables:
+   ```bash
+   # PowerShell
+   $env:LANGCHAIN_TRACING_V2="true"
+   $env:LANGCHAIN_API_KEY="<your_langsmith_api_key>"
+   $env:LANGCHAIN_PROJECT="Travel_Agent_Evaluation"
+   ```
+2. Upload dataset file `evals/eval_dataset.jsonl` in LangSmith as `Travel_Agent_Eval_Set`.
+3. Run evaluation script:
+   ```bash
+   uv run python evals/run_langsmith_eval.py --dataset "Travel_Agent_Eval_Set" --max-concurrency 1
+   ```
+
+See `evals/README.md` for full setup notes and troubleshooting.

@@ -12,6 +12,7 @@ from app.agents.tools.travel import (
     search_hotels,
 )
 from app.agents.tools.weather import get_weather
+from app.agents.rag.retriever import rag_travel_knowledge
 
 # Single source of truth for tool availability across agent runtimes.
 AGENT_TOOLS = [
@@ -23,6 +24,7 @@ AGENT_TOOLS = [
     get_place_details,
     update_itinerary_panel,
     # General research
+    rag_travel_knowledge,
     search_web,
     scrape_website,
     # Logistics
