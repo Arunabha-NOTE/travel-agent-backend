@@ -14,6 +14,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.agents.guardrails import evaluate_user_prompt
 from app.core import ResourceNotFoundError, get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
 from app.models.chat_room import ChatRoom
@@ -118,6 +119,63 @@ async def send_message(
     )
 
     await _get_owned_chat_or_404(db=db, chat_id=chat_id, user_id=current_user.id)
+
+    blocked, blocked_reason = evaluate_user_prompt(payload.content)
+    if blocked:
+        logger.warning(
+            "User message blocked by guardrails",
+            chat_id=chat_id,
+            user_id=current_user.id,
+            reason=blocked_reason,
+        )
+
+        refusal = (
+            "I can't help with overriding instructions or exposing internal prompts, "
+            "queries, credentials, or other sensitive backend information. "
+            "I can still help with your travel planning request."
+        )
+
+        user_msg = ChatMessage(
+            chat_room_id=chat_id,
+            sender_role=MessageSenderRole.user,
+            sender_user_id=current_user.id,
+            content=payload.content,
+            message_metadata={"guardrail_blocked": True, "reason": blocked_reason},
+        )
+        db.add(user_msg)
+
+        chat_result = await db.execute(select(ChatRoom).where(ChatRoom.id == chat_id))
+        chat = chat_result.scalars().first()
+        if chat:
+            chat.updated_at = datetime.now(timezone.utc)
+
+        assistant_msg = ChatMessage(
+            chat_room_id=chat_id,
+            sender_role=MessageSenderRole.assistant,
+            content=refusal,
+            message_metadata={
+                "agent": "guardrail",
+                "guardrail_blocked": True,
+                "reason": blocked_reason,
+            },
+        )
+        db.add(assistant_msg)
+        await db.commit()
+
+        async def blocked_stream():
+            safe_token = refusal.replace("\n", "\\n")
+            yield f"data: {safe_token}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            blocked_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # Save user message
     user_msg = ChatMessage(
