@@ -17,9 +17,7 @@ _BLOCK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         "prompt_exfiltration",
-        re.compile(
-            r"reveal|show|print|dump|leak", re.IGNORECASE
-        ),
+        re.compile(r"reveal|show|print|dump|leak", re.IGNORECASE),
     ),
     (
         "sensitive_internal_request",
