@@ -36,6 +36,7 @@ from app.agents.langchain_agent import (
     _infer_destination_hint,
     _message_content_to_text,
     _messages_to_langchain,
+    _load_existing_itinerary_data,
     _load_progress_state,
     _persist_progress_snapshot,
     _should_attempt_itinerary_repair,
@@ -294,6 +295,7 @@ async def run_langgraph_agent(
     planner_candidates: list[str] = []
     itinerary_data = None
     pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
+    saw_itinerary_tool_call = False
     yielded_preflight_steps: set[str] = set()
 
     def _score_candidate(text: str) -> int:
@@ -365,6 +367,7 @@ async def run_langgraph_agent(
                 yield step_token
 
                 if tool_name == "update_itinerary_panel":
+                    saw_itinerary_tool_call = True
                     (
                         tool_itinerary,
                         tool_stage,
@@ -375,6 +378,13 @@ async def run_langgraph_agent(
                             tool_itinerary,
                             tool_stage,
                             tool_expected_days,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to capture update_itinerary_panel tool input (langgraph)",
+                            chat_id=chat_id,
+                            tool_input_type=type(tool_input).__name__,
+                            tool_input_preview=str(tool_input)[:1000],
                         )
 
             elif kind == "on_tool_end":
@@ -557,8 +567,26 @@ async def run_langgraph_agent(
             dynamic_context=dynamic_context,
             parsed_stage=parsed_stage,
             is_finalize_turn=is_finalize_turn,
-            allow_minimal_fallback=True,
+            allow_minimal_fallback=last_persisted_itinerary_signature is None,
         )
+
+        if parsed_itinerary is None:
+            parsed_itinerary = await _load_existing_itinerary_data(db, chat_id)
+            if parsed_itinerary is not None:
+                logger.info(
+                    "Reusing existing itinerary snapshot after LangGraph final extraction miss",
+                    chat_id=chat_id,
+                    stage=parsed_stage,
+                    saw_itinerary_tool_call=saw_itinerary_tool_call,
+                )
+            elif is_finalize_turn or parsed_stage == "complete":
+                logger.warning(
+                    "LangGraph finalize turn ended without persisted itinerary snapshot",
+                    chat_id=chat_id,
+                    stage=parsed_stage,
+                    saw_itinerary_tool_call=saw_itinerary_tool_call,
+                    final_text_preview=final_text[:1200],
+                )
 
         if is_finalize_turn and not parsed_stage:
             parsed_stage = "complete"

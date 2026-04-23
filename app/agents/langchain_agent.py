@@ -1182,12 +1182,25 @@ def _extract_itinerary_tool_snapshot(
     if not isinstance(payload, dict):
         return None, None, None
 
-    if isinstance(payload.get("kwargs"), dict):
-        payload = payload["kwargs"]
+    for nested_key in ("kwargs", "args", "input", "tool_input"):
+        nested_payload = payload.get(nested_key)
+        if isinstance(nested_payload, dict):
+            payload = nested_payload
+            break
+        if isinstance(nested_payload, str):
+            try:
+                parsed_nested = json.loads(nested_payload)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed_nested, dict):
+                payload = parsed_nested
+                break
 
     itinerary_data: dict[str, Any] | None = None
     if isinstance(payload.get("itinerary_data"), dict):
         itinerary_data = payload["itinerary_data"]
+    elif isinstance(payload.get("itinerary"), dict):
+        itinerary_data = payload["itinerary"]
     elif "days" in payload and "destination" in payload:
         itinerary_data = payload
 
@@ -1799,6 +1812,18 @@ def _get_itinerary_lock(chat_id: uuid.UUID) -> asyncio.Lock:
     return lock
 
 
+async def _load_existing_itinerary_data(
+    db: AsyncSession, chat_id: uuid.UUID
+) -> dict[str, Any] | None:
+    result = await db.execute(
+        select(ChatItinerary).where(ChatItinerary.chat_room_id == chat_id)
+    )
+    itinerary_row = result.scalars().first()
+    if itinerary_row and isinstance(itinerary_row.itinerary_data, dict):
+        return dict(itinerary_row.itinerary_data)
+    return None
+
+
 async def _load_progress_state(
     db: AsyncSession, chat_id: uuid.UUID
 ) -> tuple[str | None, str | None]:
@@ -2000,6 +2025,7 @@ async def run_langchain_agent(
     llm_candidates: list[str] = []
     itinerary_data: dict[str, Any] | None = None
     pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
+    saw_itinerary_tool_call = False
     prompt_tokens = 0
     completion_tokens = 0
     yielded_preflight_steps: set[str] = set()
@@ -2030,6 +2056,7 @@ async def run_langchain_agent(
                 yield step_token
 
                 if tool_name == "update_itinerary_panel":
+                    saw_itinerary_tool_call = True
                     (
                         tool_itinerary,
                         tool_stage,
@@ -2040,6 +2067,13 @@ async def run_langchain_agent(
                             tool_itinerary,
                             tool_stage,
                             tool_expected_days,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to capture update_itinerary_panel tool input",
+                            chat_id=chat_id,
+                            tool_input_type=type(tool_input).__name__,
+                            tool_input_preview=str(tool_input)[:1000],
                         )
 
             elif kind == "on_tool_end":
@@ -2260,8 +2294,26 @@ async def run_langchain_agent(
             dynamic_context=dynamic_sys_prompt,
             parsed_stage=parsed_stage,
             is_finalize_turn=is_finalize_turn,
-            allow_minimal_fallback=True,
+            allow_minimal_fallback=last_persisted_itinerary_signature is None,
         )
+
+        if parsed_itinerary is None:
+            parsed_itinerary = await _load_existing_itinerary_data(db, chat_id)
+            if parsed_itinerary is not None:
+                logger.info(
+                    "Reusing existing itinerary snapshot after final extraction miss",
+                    chat_id=chat_id,
+                    stage=parsed_stage,
+                    saw_itinerary_tool_call=saw_itinerary_tool_call,
+                )
+            elif is_finalize_turn or parsed_stage == "complete":
+                logger.warning(
+                    "Finalize turn ended without persisted itinerary snapshot",
+                    chat_id=chat_id,
+                    stage=parsed_stage,
+                    saw_itinerary_tool_call=saw_itinerary_tool_call,
+                    final_text_preview=final_text[:1200],
+                )
 
         if is_finalize_turn and not parsed_stage:
             parsed_stage = "complete"
