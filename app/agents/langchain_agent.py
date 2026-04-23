@@ -1363,6 +1363,53 @@ def _strip_agent_tags(text: str) -> str:
     return text.strip()
 
 
+def _response_contains_sensitive_fact_claims(text: str) -> bool:
+    lowered = text.lower()
+    patterns = [
+        r"\blanguage\b",
+        r"\bspoken\b",
+        r"\bprefer(?:red)?\b",
+        r"\bcommonly used\b",
+        r"\bneighbou?rhood\b",
+        r"\bbest area\b",
+        r"\bideal area\b",
+        r"\betiquette\b",
+        r"\bcustoms?\b",
+        r"\bopening hours?\b",
+        r"\bclosed on\b",
+        r"\bentry fee\b",
+        r"\bticket fee\b",
+        r"\boperational\b",
+        r"\bseasonal\b",
+    ]
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _apply_fact_grounding_notice_if_needed(
+    text: str, *, grounding_tools_used: set[str]
+) -> str:
+    """Add a narrow caution note when sensitive facts were stated without grounding tools."""
+    if not text.strip():
+        return text
+
+    if not _response_contains_sensitive_fact_claims(text):
+        return text
+
+    if grounding_tools_used.intersection(
+        {"rag_travel_knowledge", "search_web", "get_place_details", "get_weather"}
+    ):
+        return text
+
+    notice = (
+        "\n\nNote: destination language, cultural norms, neighborhood suitability, "
+        "fees, and operating details should be treated as preliminary here unless "
+        "explicitly verified from retrieved knowledge or live sources."
+    )
+    if notice.strip() in text:
+        return text
+    return text.rstrip() + notice
+
+
 def _itinerary_signature(data: dict[str, Any]) -> str:
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
@@ -2026,6 +2073,7 @@ async def run_langchain_agent(
     itinerary_data: dict[str, Any] | None = None
     pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
     saw_itinerary_tool_call = False
+    grounding_tools_used: set[str] = set()
     prompt_tokens = 0
     completion_tokens = 0
     yielded_preflight_steps: set[str] = set()
@@ -2050,6 +2098,13 @@ async def run_langchain_agent(
             if kind == "on_tool_start":
                 tool_name = event.get("name", "")
                 tool_input = event.get("data", {}).get("input", {})
+                if tool_name in {
+                    "rag_travel_knowledge",
+                    "search_web",
+                    "get_place_details",
+                    "get_weather",
+                }:
+                    grounding_tools_used.add(tool_name)
                 step_label = _tool_step_label(tool_name, tool_input)
                 step_token = f"[STEP:{step_label}]"
                 full_response += step_token
@@ -2331,6 +2386,10 @@ async def run_langchain_agent(
         clean_response = _strip_agent_tags(final_text)
         # Also strip [STEP:] markers from stored message
         clean_response = re.sub(r"\[STEP:[^\]]*\]", "", clean_response).strip()
+        clean_response = _apply_fact_grounding_notice_if_needed(
+            clean_response,
+            grounding_tools_used=grounding_tools_used,
+        )
 
         # If the response only contained XML blocks, give it a friendly fallback
         if not clean_response and parsed_itinerary:

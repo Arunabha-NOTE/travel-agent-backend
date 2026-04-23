@@ -24,6 +24,7 @@ from app.agents.prompts import (
 )
 from app.agents.tool_suite import AGENT_TOOLS
 from app.agents.langchain_agent import (
+    _apply_fact_grounding_notice_if_needed,
     _clean_stage_value,
     _extract_itinerary,
     _extract_itinerary_tool_snapshot,
@@ -296,6 +297,7 @@ async def run_langgraph_agent(
     itinerary_data = None
     pending_tool_snapshot: tuple[dict[str, Any], str | None, int | None] | None = None
     saw_itinerary_tool_call = False
+    grounding_tools_used: set[str] = set()
     yielded_preflight_steps: set[str] = set()
 
     def _score_candidate(text: str) -> int:
@@ -362,6 +364,13 @@ async def run_langgraph_agent(
             if kind == "on_tool_start":
                 tool_name = event.get("name", "")
                 tool_input = event.get("data", {}).get("input", {})
+                if tool_name in {
+                    "rag_travel_knowledge",
+                    "search_web",
+                    "get_place_details",
+                    "get_weather",
+                }:
+                    grounding_tools_used.add(tool_name)
                 step_label = _tool_step_label(tool_name, tool_input)
                 step_token = f"[STEP:{step_label}]"
                 yield step_token
@@ -603,6 +612,10 @@ async def run_langgraph_agent(
         if final_text:
             clean_response = _strip_agent_tags(final_text)
             clean_response = re.sub(r"\[STEP:[^\]]*\]", "", clean_response).strip()
+            clean_response = _apply_fact_grounding_notice_if_needed(
+                clean_response,
+                grounding_tools_used=grounding_tools_used,
+            )
 
             # If the response only contained XML blocks, give it a friendly fallback
             if not clean_response and parsed_itinerary:
