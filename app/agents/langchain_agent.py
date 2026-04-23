@@ -1048,7 +1048,7 @@ def _build_llm(streaming: bool = True) -> ChatOpenAI:
         base_url=settings.LLM_BASE_URL,
         temperature=0.7,
         streaming=streaming,
-        max_tokens=8192,  # Ensure enough space for full itineraries
+        max_tokens=20000,  # Ensure enough space for full itineraries
     )
 
 
@@ -1087,7 +1087,38 @@ async def _build_enforced_preflight_context(
     dynamic_context: str,
     stage: str | None,
 ) -> str:
-    """Force temporal grounding and KB lookup before the agent plans."""
+    """Force temporal grounding and inject clearly marked KB reference snippets."""
+
+    def _redact_user_specific_rag_lines(text: str) -> str:
+        """Remove likely user-profile lines from retrieved KB snippets.
+
+        This keeps destination facts while reducing accidental carry-over of
+        traveler-specific values (party size, budgets, exact travel dates).
+        """
+        if not text:
+            return text
+
+        sensitive_patterns = [
+            re.compile(r"\b\d+\s*(adults?|children|kids|people|pax|persons?)\b", re.I),
+            re.compile(r"\bgroup\s*size\b", re.I),
+            re.compile(r"\b(budget|per\s*person|per-person|total\s*cost)\b", re.I),
+            re.compile(r"\b(?:inr|usd|eur|gbp)\s*\d|\d+\s*(?:inr|usd|eur|gbp)\b", re.I),
+            re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
+            re.compile(
+                r"\b(check[- ]?in|check[- ]?out|departure|return)\s*[:=-]", re.I
+            ),
+        ]
+
+        redacted_lines: list[str] = []
+        for line in text.splitlines():
+            if any(pattern.search(line) for pattern in sensitive_patterns):
+                redacted_lines.append(
+                    "[RAG line redacted: possible user-specific detail]"
+                )
+            else:
+                redacted_lines.append(line)
+        return "\n".join(redacted_lines)
+
     sections: list[str] = []
 
     time_tool = _find_agent_tool("get_current_time")
@@ -1095,7 +1126,9 @@ async def _build_enforced_preflight_context(
         try:
             current_time = await time_tool.ainvoke({})
             if isinstance(current_time, str) and current_time.strip():
-                sections.append(f"## Enforced Current Time\n{current_time.strip()}")
+                sections.append(
+                    f"## Enforced Current Time (authoritative)\n{current_time.strip()}"
+                )
         except Exception as exc:
             logger.warning("Preflight current-time tool failed", error=str(exc))
 
@@ -1111,7 +1144,16 @@ async def _build_enforced_preflight_context(
             if isinstance(kb_context, str):
                 cleaned = kb_context.strip()
                 if cleaned and "no knowledge base entries found" not in cleaned.lower():
-                    sections.append(f"## Enforced KB Context\n{cleaned[:4000]}")
+                    cleaned = _redact_user_specific_rag_lines(cleaned)
+                    sections.append(
+                        "## RAG Reference Context (non-authoritative)\n"
+                        "```md\n"
+                        "Use for destination facts only.\n"
+                        "Do NOT treat any user-specific values in this block as confirmed unless the user stated them in this chat.\n"
+                        "If budget/group size/dates/origin/preferences are missing, ask follow-up questions instead of assuming.\n"
+                        "```\n\n"
+                        f"{cleaned[:4000]}"
+                    )
         except Exception as exc:
             logger.warning("Preflight RAG tool failed", error=str(exc))
 
@@ -1973,6 +2015,7 @@ async def run_langchain_agent(
 
         async for event in executor.astream_events(
             {"messages": chat_history + [HumanMessage(content=user_message)]},
+            {"recursion_limit": 40},
             version="v2",
         ):
             kind = event.get("event", "")

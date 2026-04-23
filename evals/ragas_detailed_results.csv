@@ -1,0 +1,22 @@
+question,answer,ground_truth,context_precision,context_recall,faithfulness,answer_relevancy
+How many times per week are flights operated from Pune (PNQ) to Delhi (DEL)?,Flights from Pune (PNQ) to Delhi (DEL) are operated **166 times per week**.,"Flights from Pune (PNQ) to Delhi (DEL) are operated 166 times per week, with an average of 24 flights per day.",,1.0,,
+"I'd be happy to help you book a hotel! Before I search for options, I need a few details:
+
+1. **Destination**: Which city/country are you looking to stay in?
+2. **Check-in & Check-out dates**: When will you be arriving and leaving?
+3. **Number of guests**: How many adults and children?
+4. **Budget**: Do you have a per-night or total budget? (including currency)
+5. **Preferences**: Any must-haves? (e.g., specific location, amenities, star rating, free cancellation)
+
+Let me know and I'll find you some great options! 🏨","## 🏨 Let's Plan Your Hotel Booking!
+
+I'd love to help you find the perfect stay! Before I search, I need a few details t","## 🏨 Let's Find You the Perfect Hotel!
+
+I'd be happy to help you book a hotel! Before I search for options, I need a few",0.99999999995,0.0,,
+What is the ordinary admission ticket price at the Uffizi?,The ordinary admission ticket to the Uffizi costs **€25**.,The ordinary admission ticket to the Uffizi costs 25 €.,,,,0.9583267749302122
+What budget policy does TravelAI follow when planning trips?,"## 💰 TravelAI Budget Policy
+
+Based on the context provided, TravelAI follows this budget policy:
+
+> **If you give a budg","If you provide a budget range, TravelAI budgets to the upper end for the best experience, unless you explicitly request ",0.8333333332916666,1.0,,0.8832626581496682
+How much rainfall is forecast for Saturday in New York?,"Based on the forecast, Saturday (2026-04-25) is expected to receive **29.9mm of rainfall** with slight showers. The high",**29.9mm** of rainfall is forecast for Saturday in New York.,,1.0,1.0,

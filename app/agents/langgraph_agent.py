@@ -80,7 +80,7 @@ def _build_llm(streaming: bool = True) -> ChatOpenAI:
         temperature=0.7,
         streaming=streaming,
         max_retries=2,
-        max_tokens=8192,
+        max_tokens=20000,
     )
 
 
@@ -349,6 +349,7 @@ async def run_langgraph_agent(
                 "is_valid": False,
                 "latest_reflection": None,
             },
+            {"recursion_limit": 40},
             version="v2",
         ):
             kind = event.get("event", "")
