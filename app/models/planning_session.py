@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from app.models.chat_room import ChatRoom
 
 
-PLANNING_STAGES = ["initial", "flights", "hotels", "attractions", "complete"]
+PLANNING_STAGES = ["initial", "transport", "hotels", "attractions", "complete"]
 
 DEFAULT_PREFERENCES: dict[str, Any] = {
     "origin": None,

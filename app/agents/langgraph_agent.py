@@ -104,6 +104,7 @@ async def planner_node(state: TravelPlanState) -> dict:
     stage_prompts = {
         "initial": "Ask about budget, group size, dates, and memberships. DO NOT suggest flights yet.",
         "flights": FLIGHT_AGENT_PROMPT,
+        "transport": FLIGHT_AGENT_PROMPT,
         "hotels": HOTEL_AGENT_PROMPT,
         "attractions": ATTRACTION_AGENT_PROMPT,
         "complete": PLANNER_AGENT_PROMPT,

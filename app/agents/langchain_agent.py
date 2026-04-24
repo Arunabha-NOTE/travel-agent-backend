@@ -132,7 +132,7 @@ def _looks_like_itinerary_payload(text: str) -> bool:
 
 
 def _is_non_initial_stage(stage: str | None) -> bool:
-    return stage in {"flights", "hotels", "attractions", "complete"}
+    return stage in {"transport", "hotels", "attractions", "complete"}
 
 
 def _should_attempt_itinerary_repair(
@@ -236,6 +236,8 @@ def _clean_stage_value(stage: Any) -> str | None:
     if stage is None:
         return None
     value = str(stage).strip().lower()
+    if value == "flights":
+        return "transport"
     return value or None
 
 
@@ -1340,12 +1342,12 @@ def _extract_planning_stage(text: str) -> str | None:
     """
     closed_match = re.search(r"<planning_stage>(.*?)</planning_stage>", text, re.DOTALL)
     if closed_match:
-        return closed_match.group(1).strip()
+        return _clean_stage_value(closed_match.group(1).strip())
 
     # Fallback for truncated response
     unclosed_match = re.search(r"<planning_stage>([a-z_]+)$", text.strip())
     if unclosed_match:
-        return unclosed_match.group(1).strip()
+        return _clean_stage_value(unclosed_match.group(1).strip())
 
     return None
 
@@ -2483,18 +2485,19 @@ async def _upsert_planning_stage(
     db: AsyncSession, chat_id: uuid.UUID, new_stage: str
 ) -> None:
     """Create or update the PlanningSession stage."""
+    normalized_stage = _clean_stage_value(new_stage) or "initial"
     result = await db.execute(
         select(PlanningSession).where(PlanningSession.chat_room_id == chat_id)
     )
     session = result.scalars().first()
     if session:
-        session.stage = new_stage
+        session.stage = normalized_stage
         session.updated_at = datetime.now(timezone.utc)
     else:
         db.add(
             PlanningSession(
                 chat_room_id=chat_id,
-                stage=new_stage,
+                stage=normalized_stage,
                 preferences=dict(DEFAULT_PREFERENCES),
             )
         )

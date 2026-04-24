@@ -17,6 +17,80 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _to_title_case(text: str) -> str:
+    return " ".join(word.capitalize() for word in text.split())
+
+
+def _extract_trip_title_from_query(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if not normalized:
+        return None
+
+    lowered = normalized.lower()
+    prefixes = [
+        "plan a trip to ",
+        "plan trip to ",
+        "trip to ",
+        "travel to ",
+        "vacation to ",
+        "holiday to ",
+    ]
+
+    destination: str | None = None
+    origin: str | None = None
+
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            remainder = normalized[len(prefix) :].strip()
+            split_match = re.split(
+                r"\s+(?:from|for|with|on|in|during|between)\s+",
+                remainder,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )
+            destination = split_match[0].strip(" ,.?!")
+            from_match = re.search(r"\bfrom\s+([a-zA-Z ]+)", remainder, re.IGNORECASE)
+            if from_match:
+                origin = from_match.group(1).strip(" ,.?!")
+            break
+
+    if destination:
+        destination = _to_title_case(destination)
+        if origin:
+            origin = _to_title_case(origin)
+            return f"{destination} {origin} Trip"
+        return f"{destination} Trip"
+
+    route_match = re.search(
+        r"\bto\s+([a-zA-Z ]+?)\s+from\s+([a-zA-Z ]+)\b", normalized, re.IGNORECASE
+    )
+    if route_match:
+        destination = _to_title_case(route_match.group(1).strip(" ,.?!"))
+        origin = _to_title_case(route_match.group(2).strip(" ,.?!"))
+        return f"{destination} {origin} Trip"
+
+    go_match = re.search(
+        r"\b(?:go to|travel to|visit)\s+([a-zA-Z ]+?)(?:[,.]|\s+i\s+live\b|\s+from\b|$)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if go_match:
+        destination = _to_title_case(go_match.group(1).strip(" ,.?!"))
+
+        live_match = re.search(
+            r"\b(?:i\s+live\s+in|we\s+live\s+in|from)\s+([a-zA-Z ]+?)(?:[,.]|\s+we\b|\s+travel\b|\s+dates\b|$)",
+            normalized,
+            re.IGNORECASE,
+        )
+        if live_match:
+            origin = _to_title_case(live_match.group(1).strip(" ,.?!"))
+            return f"{destination} {origin} Trip"
+
+        return f"{destination} Trip"
+
+    return None
+
+
 def _normalize_seed_text(seed: str | Sequence[dict[str, Any]]) -> str:
     if isinstance(seed, str):
         return seed.strip()[:800]
@@ -76,6 +150,12 @@ async def generate_chat_title(seed: str | Sequence[dict[str, Any]]) -> str | Non
     if not snippet:
         logger.info("Titler skipped due empty seed")
         return None
+
+    if isinstance(seed, str):
+        heuristic_title = _extract_trip_title_from_query(seed)
+        if heuristic_title:
+            logger.info("Titler generated heuristic title", title=heuristic_title)
+            return heuristic_title
 
     try:
         from openai import AsyncOpenAI

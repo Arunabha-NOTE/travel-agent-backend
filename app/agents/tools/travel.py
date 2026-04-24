@@ -37,54 +37,56 @@ def _safe_float(value: object) -> float | None:
 # ---------------------------------------------------------------------------
 # IATA lookup helpers
 # ---------------------------------------------------------------------------
-_CITY_CODES: dict[str, str] = {
-    "pune": "PNQ",
-    "mumbai": "BOM",
-    "delhi": "DEL",
-    "new delhi": "DEL",
-    "bangalore": "BLR",
-    "bengaluru": "BLR",
-    "kolkata": "CCU",
-    "chennai": "MAA",
-    "hyderabad": "HYD",
-    "ahmedabad": "AMD",
-    "goa": "GOI",
-    "kochi": "COK",
-    "paris": "CDG",
-    "london": "LHR",
-    "new york": "JFK",
-    "dubai": "DXB",
-    "abu dhabi": "AUH",
-    "doha": "DOH",
-    "singapore": "SIN",
-    "bangkok": "BKK",
-    "tokyo": "NRT",
-    "osaka": "KIX",
-    "sydney": "SYD",
-    "rome": "FCO",
-    "milan": "MXP",
-    "barcelona": "BCN",
-    "madrid": "MAD",
-    "amsterdam": "AMS",
-    "frankfurt": "FRA",
-    "zurich": "ZRH",
-    "vienna": "VIE",
-    "prague": "PRG",
-    "istanbul": "IST",
-    "cairo": "CAI",
-    "nairobi": "NBO",
-    "johannesburg": "JNB",
-    "toronto": "YYZ",
-    "los angeles": "LAX",
-    "san francisco": "SFO",
-    "chicago": "ORD",
-    "miami": "MIA",
-    "kuala lumpur": "KUL",
-    "bali": "DPS",
-    "hong kong": "HKG",
-    "seoul": "ICN",
-    "beijing": "PEK",
-    "shanghai": "PVG",
+_CITY_AIRPORT_CODES: dict[str, list[str]] = {
+    "pune": ["PNQ"],
+    "mumbai": ["BOM"],
+    "delhi": ["DEL"],
+    "new delhi": ["DEL"],
+    "bangalore": ["BLR"],
+    "bengaluru": ["BLR"],
+    "kolkata": ["CCU"],
+    "chennai": ["MAA"],
+    "hyderabad": ["HYD"],
+    "ahmedabad": ["AMD"],
+    "goa": ["GOI"],
+    "kochi": ["COK"],
+    "paris": ["CDG", "ORY"],
+    "london": ["LHR", "LGW", "LCY", "LTN", "STN"],
+    "new york": ["JFK", "EWR", "LGA"],
+    "dubai": ["DXB"],
+    "abu dhabi": ["AUH"],
+    "doha": ["DOH"],
+    "singapore": ["SIN"],
+    "bangkok": ["BKK", "DMK"],
+    "tokyo": ["NRT", "HND"],
+    "narita": ["NRT"],
+    "haneda": ["HND"],
+    "osaka": ["KIX", "ITM"],
+    "sydney": ["SYD"],
+    "rome": ["FCO", "CIA"],
+    "milan": ["MXP", "LIN", "BGY"],
+    "barcelona": ["BCN"],
+    "madrid": ["MAD"],
+    "amsterdam": ["AMS"],
+    "frankfurt": ["FRA"],
+    "zurich": ["ZRH"],
+    "vienna": ["VIE"],
+    "prague": ["PRG"],
+    "istanbul": ["IST", "SAW"],
+    "cairo": ["CAI"],
+    "nairobi": ["NBO"],
+    "johannesburg": ["JNB"],
+    "toronto": ["YYZ", "YTZ"],
+    "los angeles": ["LAX"],
+    "san francisco": ["SFO"],
+    "chicago": ["ORD", "MDW"],
+    "miami": ["MIA"],
+    "kuala lumpur": ["KUL"],
+    "bali": ["DPS"],
+    "hong kong": ["HKG"],
+    "seoul": ["ICN", "GMP"],
+    "beijing": ["PEK", "PKX"],
+    "shanghai": ["PVG", "SHA"],
 }
 
 _HUB_MAP: dict[str, str] = {
@@ -98,10 +100,170 @@ _HUB_MAP: dict[str, str] = {
 
 def _city_to_code(city: str) -> str:
     city_lower = city.lower()
-    for k, v in _CITY_CODES.items():
+    for k, codes in _CITY_AIRPORT_CODES.items():
         if k in city_lower:
-            return v
+            return codes[0]
     return city.upper()[:3]
+
+
+def _normalize_airport_selector(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+
+    # Preserve explicit comma-separated inputs while normalizing city aliases.
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    normalized_parts: list[str] = []
+
+    for part in parts:
+        if re.fullmatch(r"(?:[A-Z]{3}|/[mg]/[A-Za-z0-9_-]+)", part):
+            normalized_parts.append(part)
+            continue
+
+        matched_codes: list[str] = []
+        lowered_part = part.lower()
+        for city, codes in _CITY_AIRPORT_CODES.items():
+            if city in lowered_part:
+                matched_codes.extend(codes)
+                break
+
+        if matched_codes:
+            normalized_parts.extend(matched_codes)
+        else:
+            normalized_parts.append(part.upper())
+
+    deduped_parts: list[str] = []
+    for part in normalized_parts:
+        if part not in deduped_parts:
+            deduped_parts.append(part)
+    return ",".join(deduped_parts)
+
+
+def _search_serp_flights_autocomplete(
+    query: str, *, exclude_regions: bool = True
+) -> dict:
+    """Resolve a city/airport string via SerpApi Google Flights autocomplete."""
+    try:
+        import requests
+        from app.core.config import settings
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
+
+        api_key = getattr(settings, "SERP_API_KEY", None)
+        if not api_key:
+            logger.debug("SERP API key not configured for airport autocomplete")
+            return {}
+
+        params = {
+            "api_key": api_key,
+            "engine": "google_flights_autocomplete",
+            "q": query,
+            "gl": getattr(settings, "SERP_GL", "us"),
+            "hl": getattr(settings, "SERP_HL", "en"),
+            "exclude_regions": str(exclude_regions).lower(),
+            # Allow SerpApi cache so repeated airport lookups stay free.
+            "no_cache": "false",
+        }
+
+        response = requests.get("https://serpapi.com/search", params=params, timeout=20)
+        if response.status_code != 200:
+            logger.warning(
+                "SERP airport autocomplete error",
+                status_code=response.status_code,
+                query=query,
+            )
+            return {}
+
+        return response.json()
+    except Exception as e:
+        from app.core.logging import get_logger
+
+        logger = get_logger(__name__)
+        logger.warning(f"SERP airport autocomplete failed: {str(e)}", query=query)
+        return {}
+
+
+def _resolve_airport_selector_with_serp(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    result = _search_serp_flights_autocomplete(raw)
+    suggestions = result.get("suggestions") if isinstance(result, dict) else None
+    if not isinstance(suggestions, list):
+        return None
+
+    airport_codes: list[str] = []
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict):
+            continue
+
+        airports = suggestion.get("airports")
+        if isinstance(airports, list):
+            for airport in airports:
+                if not isinstance(airport, dict):
+                    continue
+                airport_id = str(airport.get("id") or "").strip().upper()
+                if re.fullmatch(r"[A-Z]{3}", airport_id) and airport_id not in airport_codes:
+                    airport_codes.append(airport_id)
+
+        suggestion_id = str(suggestion.get("id") or "").strip().upper()
+        suggestion_type = str(suggestion.get("type") or "").strip().lower()
+        if (
+            not airport_codes
+            and suggestion_type == "airport"
+            and re.fullmatch(r"[A-Z]{3}", suggestion_id)
+        ):
+            airport_codes.append(suggestion_id)
+
+        if airport_codes:
+            return ",".join(airport_codes[:5])
+
+    return None
+
+
+def _normalize_airport_selector_with_fallback(value: str) -> tuple[str, bool]:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw, False
+
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    normalized_parts: list[str] = []
+    used_serp_fallback = False
+
+    for part in parts:
+        if re.fullmatch(r"(?:[A-Z]{3}|/[mg]/[A-Za-z0-9_-]+)", part):
+            normalized_parts.append(part)
+            continue
+
+        matched_codes: list[str] = []
+        lowered_part = part.lower()
+        for city, codes in _CITY_AIRPORT_CODES.items():
+            if city in lowered_part:
+                matched_codes.extend(codes)
+                break
+
+        if matched_codes:
+            normalized_parts.extend(matched_codes)
+            continue
+
+        serp_resolved = _resolve_airport_selector_with_serp(part)
+        if serp_resolved:
+            normalized_parts.extend(
+                resolved_part.strip()
+                for resolved_part in serp_resolved.split(",")
+                if resolved_part.strip()
+            )
+            used_serp_fallback = True
+        else:
+            normalized_parts.append(part.upper())
+
+    deduped_parts: list[str] = []
+    for part in normalized_parts:
+        if part not in deduped_parts:
+            deduped_parts.append(part)
+    return ",".join(deduped_parts), used_serp_fallback
 
 
 def _get_hubs(origin: str) -> str:
@@ -115,7 +277,7 @@ def _get_hubs(origin: str) -> str:
 def _get_locality(location: str) -> dict[str, str]:
     """Return currency and regional site preferences based on location."""
     loc = location.lower()
-    if any(c in loc for c in _CITY_CODES.keys()) or "india" in loc:
+    if any(c in loc for c in _CITY_AIRPORT_CODES.keys()) or "india" in loc:
         return {"ccy": "INR", "sym": "₹", "site": "MakeMyTrip IndiGo"}
     if any(e in loc for e in ["uk", "london", "gbp"]):
         return {"ccy": "GBP", "sym": "£", "site": "Skyscanner Trainline"}
@@ -1209,7 +1371,7 @@ async def search_flights(
     infants_in_seat: str | None = None,
     infants_on_lap: str | None = None,
     sort_by: str = "1",
-    stops: str | None = "0",
+    stops: str | None = None,
     exclude_airlines: str | None = None,
     include_airlines: str | None = None,
     bags: str | None = None,
@@ -1227,8 +1389,8 @@ async def search_flights(
     Returns exact LIVE pricing and schedules as JSON. Pass the response JSON as is to the user.
 
     Args:
-        departure_id: Departure airport IATA code MUST be capitalized (e.g., "BOM" for Mumbai).
-        arrival_id: Arrival airport IATA code MUST be capitalized (e.g., "MLE" for Male).
+        departure_id: Departure airport IATA code, comma-separated airport codes, city alias, or location kgmid (e.g., "BOM", "BOM,PNQ", "Mumbai", "/m/0w4r").
+        arrival_id: Arrival airport IATA code, comma-separated airport codes, city alias, or location kgmid (e.g., "NRT,HND", "Tokyo", "/m/07dfk").
         outbound_date: Departure date in YYYY-MM-DD.
         return_date: Return date in YYYY-MM-DD.
         type: "1" for Round trip, "2" for One-way, "3" for Multi-city.
@@ -1242,7 +1404,7 @@ async def search_flights(
         infants_in_seat: Number of infants in seat ("1").
         infants_on_lap: Number of infants on lap ("1").
         sort_by: "1" (Top flights), "2" (Price), "3" (Departure Obj.), "4" (Arrival Obj.), "5" (Duration).
-        stops: "0" (Nonstop), "1" (max 1 stop), "2" (max 2 stops).
+        stops: "0" (Nonstop), "1" (max 1 stop), "2" (max 2 stops). Leave unset to allow Google Flights defaults.
         exclude_airlines: Exclude specific airline code/alliance (e.g., "STAR_ALLIANCE").
         include_airlines: Include specific airline code (e.g., "AI").
         bags: Number of carry-on bags ("1").
@@ -1260,11 +1422,30 @@ async def search_flights(
     from app.agents.tools.utils import persist_tool_result
 
     logger = get_logger(__name__)
-    logger.info(f"Flight search {departure_id} -> {arrival_id} on {outbound_date}")
+    normalized_departure_id, departure_used_serp_fallback = (
+        _normalize_airport_selector_with_fallback(departure_id)
+    )
+    normalized_arrival_id, arrival_used_serp_fallback = (
+        _normalize_airport_selector_with_fallback(arrival_id)
+    )
+
+    logger.info(
+        "Flight search requested",
+        departure_id=departure_id,
+        arrival_id=arrival_id,
+        normalized_departure_id=normalized_departure_id,
+        normalized_arrival_id=normalized_arrival_id,
+        departure_used_serp_fallback=departure_used_serp_fallback,
+        arrival_used_serp_fallback=arrival_used_serp_fallback,
+        outbound_date=outbound_date,
+        return_date=return_date,
+        travel_class=travel_class,
+        stops=stops,
+    )
 
     params = {
-        "departure_id": departure_id,
-        "arrival_id": arrival_id,
+        "departure_id": normalized_departure_id,
+        "arrival_id": normalized_arrival_id,
         "outbound_date": outbound_date,
         "currency": currency,
         "type": type,
@@ -1312,8 +1493,37 @@ async def search_flights(
 
     result = _search_serp_flights(params)
 
+    flights_found = bool(
+        isinstance(result, dict)
+        and (result.get("best_flights") or result.get("other_flights"))
+    )
+    if not flights_found and stops == "0":
+        retry_params = dict(params)
+        retry_params.pop("stops", None)
+        logger.info(
+            "Retrying flight search without nonstop restriction",
+            departure_id=normalized_departure_id,
+            arrival_id=normalized_arrival_id,
+            outbound_date=outbound_date,
+            travel_class=travel_class,
+        )
+        retry_result = _search_serp_flights(retry_params)
+        retry_flights_found = bool(
+            isinstance(retry_result, dict)
+            and (retry_result.get("best_flights") or retry_result.get("other_flights"))
+        )
+        if retry_flights_found:
+            result = retry_result
+
     # Truncate response slightly to save LLM context
     if isinstance(result, dict):
+        result.setdefault("search_parameters", {})
+        result["search_parameters"]["resolved_departure_id"] = normalized_departure_id
+        result["search_parameters"]["resolved_arrival_id"] = normalized_arrival_id
+        result["search_parameters"]["used_airport_resolution_fallback"] = {
+            "departure": departure_used_serp_fallback,
+            "arrival": arrival_used_serp_fallback,
+        }
         if "best_flights" in result:
             result["best_flights"] = result.get("best_flights", [])[:3]
         if "other_flights" in result:
@@ -1321,6 +1531,12 @@ async def search_flights(
         if "search_metadata" in result:
             for k in ["raw_html_file", "prettify_html_file"]:
                 result["search_metadata"].pop(k, None)
+        if not (result.get("best_flights") or result.get("other_flights")):
+            result["tool_note"] = (
+                "No flights returned for the requested filters. If this route should have options, "
+                "try multiple airport codes (for example Tokyo as NRT,HND), remove nonstop-only constraints, "
+                "or broaden time/airline filters."
+            )
 
     response_str = json.dumps(result, indent=2)
 
@@ -1328,8 +1544,8 @@ async def search_flights(
         "search_flights",
         response_str,
         metadata={
-            "departure_id": departure_id,
-            "arrival_id": arrival_id,
+            "departure_id": normalized_departure_id,
+            "arrival_id": normalized_arrival_id,
             "departure_date": outbound_date,
         },
         status="ok" if result else "missing",

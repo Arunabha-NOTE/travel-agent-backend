@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -17,17 +18,23 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
+_CHAT_TITLE_MAX_LENGTH = 80
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
+_KNOWN_PROBLEMATIC_CHARS = {"\uA9C5", "\U0001242B"}
+
 
 class ChatCreateRequest(BaseModel):
     """Create chat request payload."""
 
-    title: str = Field(default="New chat", min_length=1, max_length=255)
+    title: str = Field(
+        default="New chat", min_length=1, max_length=_CHAT_TITLE_MAX_LENGTH
+    )
 
 
 class ChatRenameRequest(BaseModel):
     """Rename chat request payload."""
 
-    title: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=_CHAT_TITLE_MAX_LENGTH)
 
 
 class ChatResponse(BaseModel):
@@ -54,6 +61,14 @@ def _normalize_title(title: str) -> str:
     normalized = title.strip()
     if not normalized:
         raise ValidationError("Chat title cannot be empty")
+    if len(normalized) > _CHAT_TITLE_MAX_LENGTH:
+        raise ValidationError(
+            f"Chat title must be {_CHAT_TITLE_MAX_LENGTH} characters or fewer"
+        )
+    if _CONTROL_CHAR_RE.search(normalized):
+        raise ValidationError("Chat title contains unsupported control characters")
+    if any(char in _KNOWN_PROBLEMATIC_CHARS for char in normalized):
+        raise ValidationError("Chat title contains unsupported characters")
     return normalized
 
 

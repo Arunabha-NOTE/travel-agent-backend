@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from time import perf_counter
+import re
 import uuid
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,12 +27,43 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chats", tags=["messages"])
 
+_DEFAULT_CHAT_TITLES = {"new chat", "", "new conversation"}
+_LEAKED_TITLE_MARKERS = [
+    "the user",
+    "asking for",
+    "summarize",
+    "title for",
+    "generate a",
+]
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
+_KNOWN_PROBLEMATIC_CHARS = {"\uA9C5", "\U0001242B"}
+
+
+def _normalize_planning_stage(stage: str | None) -> str:
+    value = (stage or "initial").strip().lower()
+    if value == "flights":
+        return "transport"
+    return value or "initial"
+
 
 class SendMessageRequest(BaseModel):
     """Send a chat message request."""
 
     content: str = Field(min_length=1, max_length=8192)
     agent: str = Field(default="langchain", pattern=r"^(langchain|langgraph)$")
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Message cannot be empty")
+        if _CONTROL_CHAR_RE.search(normalized):
+            raise ValueError("Message contains unsupported control characters")
+        if any(char in _KNOWN_PROBLEMATIC_CHARS for char in normalized):
+            raise ValueError("Message contains unsupported characters")
+        return normalized
 
 
 class MessageResponse(BaseModel):
@@ -207,9 +239,8 @@ async def send_message(
     # fire a background task to generate and save a descriptive title.
     # history_msgs includes the user's message we just added.
     is_early_stage = len(history_msgs) <= 4  # Allow retry on first 2 exchanges
-    title_is_default = chat.title.lower() in ("new chat", "", "new conversation")
-    leaked_markers = ["the user", "asking for", "summarize", "title for", "generate a"]
-    title_is_leaked = any(p in chat.title.lower() for p in leaked_markers)
+    title_is_default = chat.title.lower() in _DEFAULT_CHAT_TITLES
+    title_is_leaked = any(p in chat.title.lower() for p in _LEAKED_TITLE_MARKERS)
 
     if (is_early_stage and chat) and (title_is_default or title_is_leaked):
         logger.info(
@@ -226,19 +257,23 @@ async def send_message(
                 from app.agents.titler import generate_chat_title
                 from app.db.session import async_session_maker
 
-                # Prepare context for the titler
-                context = []
-                for msg in history_msgs:
-                    context.append(
-                        {
-                            "role": msg.sender_role.value
-                            if hasattr(msg.sender_role, "value")
-                            else str(msg.sender_role),
-                            "content": msg.content,
-                        }
-                    )
+                # Prefer titling directly from the very first user query.
+                if len(history_msgs) == 1 and history_msgs[0].sender_role == MessageSenderRole.user:
+                    title_seed: str | list[dict[str, str]] = payload.content
+                else:
+                    context = []
+                    for msg in history_msgs:
+                        context.append(
+                            {
+                                "role": msg.sender_role.value
+                                if hasattr(msg.sender_role, "value")
+                                else str(msg.sender_role),
+                                "content": msg.content,
+                            }
+                        )
+                    title_seed = context
 
-                title = await generate_chat_title(context)
+                title = await generate_chat_title(title_seed)
                 if title:
                     async with async_session_maker() as title_db:
                         result = await title_db.execute(
@@ -246,14 +281,31 @@ async def send_message(
                         )
                         room = result.scalars().first()
                         if room:
-                            room.title = title
-                            await title_db.commit()
-                            logger.info(
-                                "Auto-title committed",
-                                chat_id=chat_id,
-                                user_id=current_user.id,
-                                title=title,
+                            current_title = (room.title or "").strip().lower()
+                            title_still_replaceable = (
+                                current_title in _DEFAULT_CHAT_TITLES
+                                or any(
+                                    marker in current_title
+                                    for marker in _LEAKED_TITLE_MARKERS
+                                )
                             )
+                            if title_still_replaceable:
+                                room.title = title
+                                room.updated_at = datetime.now(timezone.utc)
+                                await title_db.commit()
+                                logger.info(
+                                    "Auto-title committed",
+                                    chat_id=chat_id,
+                                    user_id=current_user.id,
+                                    title=title,
+                                )
+                            else:
+                                logger.info(
+                                    "Auto-title skipped because chat already renamed",
+                                    chat_id=chat_id,
+                                    user_id=current_user.id,
+                                    current_title=room.title,
+                                )
             except Exception as e:
                 logger.warning(
                     "Auto-title background task failed",
@@ -307,7 +359,7 @@ async def send_message(
         select(PlanningSession).where(PlanningSession.chat_room_id == chat_id)
     )
     planning = planning_res.scalars().first()
-    current_stage = planning.stage if planning else "initial"
+    current_stage = _normalize_planning_stage(planning.stage if planning else "initial")
 
     stage_index = (
         PLANNING_STAGES.index(current_stage) if current_stage in PLANNING_STAGES else 0
@@ -336,7 +388,7 @@ async def send_message(
             d = p["dates"]
             pref_lines.append(f"- Dates: {d['start']} to {d.get('end', '?')}")
         if p.get("flights", {}).get("selected"):
-            pref_lines.append(f"- Flight confirmed: {p['flights']['selected']}")
+            pref_lines.append(f"- Transport confirmed: {p['flights']['selected']}")
         if p.get("hotels", {}).get("selected"):
             pref_lines.append(f"- Hotel confirmed: {p['hotels']['selected']}")
 

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import ResourceNotFoundError, UnauthorizedError
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.security import verify_token
 from app.db.session import async_session_maker
@@ -40,6 +41,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def get_current_user_token(
+    request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict:
     """
@@ -54,15 +56,21 @@ async def get_current_user_token(
     Raises:
         HTTPException: If token is missing, invalid, or expired
     """
-    if not authorization:
-        raise UnauthorizedError("Missing authorization header")
+    token: str | None = None
+    if authorization:
+        try:
+            scheme, token_value = authorization.split()
+            if scheme.lower() != "bearer":
+                raise ValueError("Invalid authentication scheme")
+            token = token_value
+        except (ValueError, IndexError):
+            raise UnauthorizedError("Invalid authorization header format")
 
-    try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise ValueError("Invalid authentication scheme")
-    except (ValueError, IndexError):
-        raise UnauthorizedError("Invalid authorization header format")
+    if token is None:
+        token = request.cookies.get(settings.AUTH_ACCESS_COOKIE_NAME)
+
+    if not token:
+        raise UnauthorizedError("Missing authorization credentials")
 
     try:
         payload = verify_token(token)

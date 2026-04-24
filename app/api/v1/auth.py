@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,22 +46,19 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     """Login response schema."""
 
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
     user_id: int
 
 
 class TokenRefreshRequest(BaseModel):
     """Token refresh request schema."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
     """Logout request schema."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -109,10 +106,69 @@ def _extract_request_metadata(request: Request) -> tuple[str | None, str | None]
     return ip_address, user_agent
 
 
+def _is_secure_cookie_request(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto:
+        return forwarded_proto.split(",")[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _set_auth_cookies(
+    response: Response,
+    request: Request,
+    *,
+    access_token: str,
+    refresh_token: str,
+) -> None:
+    secure = _is_secure_cookie_request(request)
+    access_max_age = int(timedelta(hours=settings.JWT_EXPIRATION_HOURS).total_seconds())
+    refresh_max_age = int(
+        timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS).total_seconds()
+    )
+
+    response.set_cookie(
+        key=settings.AUTH_ACCESS_COOKIE_NAME,
+        value=access_token,
+        max_age=access_max_age,
+        httponly=True,
+        secure=secure,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path="/",
+    )
+    response.set_cookie(
+        key=settings.AUTH_REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=refresh_max_age,
+        httponly=True,
+        secure=secure,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response: Response, request: Request) -> None:
+    secure = _is_secure_cookie_request(request)
+    response.delete_cookie(
+        key=settings.AUTH_ACCESS_COOKIE_NAME,
+        httponly=True,
+        secure=secure,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path="/",
+    )
+    response.delete_cookie(
+        key=settings.AUTH_REFRESH_COOKIE_NAME,
+        httponly=True,
+        secure=secure,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path="/",
+    )
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     credentials: LoginRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate user and return JWT access and refresh tokens."""
@@ -164,10 +220,14 @@ async def login(
             "User logged in", email=credentials.email, user_id=user.id, ip=ip_address
         )
 
-        return LoginResponse(
+        _set_auth_cookies(
+            response,
+            request,
             access_token=access_token,
             refresh_token=refresh_token,
-            token_type="bearer",
+        )
+
+        return LoginResponse(
             user_id=user.id,
         )
 
@@ -176,6 +236,7 @@ async def login(
 async def register(
     credentials: RegisterRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user and return JWT access and refresh tokens."""
@@ -230,22 +291,33 @@ async def register(
 
         logger.info("User registered", email=credentials.email, user_id=new_user.id)
 
-        return LoginResponse(
+        _set_auth_cookies(
+            response,
+            request,
             access_token=access_token,
             refresh_token=refresh_token,
-            token_type="bearer",
+        )
+
+        return LoginResponse(
             user_id=new_user.id,
         )
 
 
 @router.post("/refresh", response_model=LoginResponse)
 async def refresh_token(
-    payload: TokenRefreshRequest,
     request: Request,
+    response: Response,
+    payload: TokenRefreshRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """Exchange a valid refresh token for a new access token."""
-    token_hash = hash_token(payload.refresh_token)
+    refresh_token_value = (payload.refresh_token if payload else None) or request.cookies.get(
+        settings.AUTH_REFRESH_COOKIE_NAME
+    )
+    if not refresh_token_value:
+        raise UnauthorizedError("Missing refresh token")
+
+    token_hash = hash_token(refresh_token_value)
     now = datetime.now(timezone.utc)
 
     result = await db.execute(
@@ -275,21 +347,34 @@ async def refresh_token(
     access_token = create_access_token(data={"sub": str(user.id), "email": user.email})
     logger.info("Access token refreshed", user_id=user.id, session_id=session.id)
 
-    return LoginResponse(
+    _set_auth_cookies(
+        response,
+        request,
         access_token=access_token,
-        refresh_token=payload.refresh_token,
-        token_type="bearer",
+        refresh_token=refresh_token_value,
+    )
+
+    return LoginResponse(
         user_id=user.id,
     )
 
 
 @router.post("/logout")
 async def logout(
-    payload: LogoutRequest,
+    request: Request,
+    response: Response,
+    payload: LogoutRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke an active refresh-token session."""
-    token_hash = hash_token(payload.refresh_token)
+    refresh_token_value = (payload.refresh_token if payload else None) or request.cookies.get(
+        settings.AUTH_REFRESH_COOKIE_NAME
+    )
+    if refresh_token_value is None:
+        _clear_auth_cookies(response, request)
+        return {"message": "Logged out successfully"}
+
+    token_hash = hash_token(refresh_token_value)
     result = await db.execute(
         select(AuthSession).where(
             and_(
@@ -302,6 +387,8 @@ async def logout(
     if session:
         session.revoked_at = datetime.now(timezone.utc)
         await db.commit()
+
+    _clear_auth_cookies(response, request)
 
     return {"message": "Logged out successfully"}
 

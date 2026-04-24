@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -61,6 +62,9 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_HOURS: int = 24
     JWT_REFRESH_EXPIRATION_DAYS: int = 30
     PASSWORD_RESET_EXPIRATION_MINUTES: int = 30
+    AUTH_ACCESS_COOKIE_NAME: str = "chatbot_access_token"
+    AUTH_REFRESH_COOKIE_NAME: str = "chatbot_refresh_token"
+    AUTH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
 
     # === CORS Configuration ===
     CORS_ORIGINS: list[str]
