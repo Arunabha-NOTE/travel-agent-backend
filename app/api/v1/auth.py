@@ -47,6 +47,8 @@ class LoginResponse(BaseModel):
     """Login response schema."""
 
     user_id: int
+    access_token: str
+    refresh_token: str
 
 
 class TokenRefreshRequest(BaseModel):
@@ -233,6 +235,8 @@ async def login(
 
         return LoginResponse(
             user_id=user.id,
+            access_token=access_token,
+            refresh_token=refresh_token,
         )
 
 
@@ -304,6 +308,8 @@ async def register(
 
         return LoginResponse(
             user_id=new_user.id,
+            access_token=access_token,
+            refresh_token=refresh_token,
         )
 
 
@@ -360,6 +366,8 @@ async def refresh_token(
 
     return LoginResponse(
         user_id=user.id,
+        access_token=access_token,
+        refresh_token=refresh_token_value,
     )
 
 
