@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     AUTH_ACCESS_COOKIE_NAME: str = "chatbot_access_token"
     AUTH_REFRESH_COOKIE_NAME: str = "chatbot_refresh_token"
     AUTH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    AUTH_COOKIE_DOMAIN: str | None = None
 
     # === CORS Configuration ===
     CORS_ORIGINS: list[str]

@@ -133,6 +133,7 @@ def _set_auth_cookies(
         httponly=True,
         secure=secure,
         samesite=settings.AUTH_COOKIE_SAMESITE,
+        domain=settings.AUTH_COOKIE_DOMAIN,
         path="/",
     )
     response.set_cookie(
@@ -142,6 +143,7 @@ def _set_auth_cookies(
         httponly=True,
         secure=secure,
         samesite=settings.AUTH_COOKIE_SAMESITE,
+        domain=settings.AUTH_COOKIE_DOMAIN,
         path="/",
     )
 
@@ -153,6 +155,7 @@ def _clear_auth_cookies(response: Response, request: Request) -> None:
         httponly=True,
         secure=secure,
         samesite=settings.AUTH_COOKIE_SAMESITE,
+        domain=settings.AUTH_COOKIE_DOMAIN,
         path="/",
     )
     response.delete_cookie(
@@ -160,6 +163,7 @@ def _clear_auth_cookies(response: Response, request: Request) -> None:
         httponly=True,
         secure=secure,
         samesite=settings.AUTH_COOKIE_SAMESITE,
+        domain=settings.AUTH_COOKIE_DOMAIN,
         path="/",
     )
 
