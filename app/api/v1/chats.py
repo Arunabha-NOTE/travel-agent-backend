@@ -20,7 +20,7 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 
 _CHAT_TITLE_MAX_LENGTH = 80
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
-_KNOWN_PROBLEMATIC_CHARS = {"\uA9C5", "\U0001242B"}
+_KNOWN_PROBLEMATIC_CHARS = {"\ua9c5", "\U0001242b"}
 
 
 class ChatCreateRequest(BaseModel):

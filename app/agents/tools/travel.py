@@ -205,7 +205,10 @@ def _resolve_airport_selector_with_serp(value: str) -> str | None:
                 if not isinstance(airport, dict):
                     continue
                 airport_id = str(airport.get("id") or "").strip().upper()
-                if re.fullmatch(r"[A-Z]{3}", airport_id) and airport_id not in airport_codes:
+                if (
+                    re.fullmatch(r"[A-Z]{3}", airport_id)
+                    and airport_id not in airport_codes
+                ):
                     airport_codes.append(airport_id)
 
         suggestion_id = str(suggestion.get("id") or "").strip().upper()

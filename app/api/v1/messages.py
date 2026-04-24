@@ -37,7 +37,7 @@ _LEAKED_TITLE_MARKERS = [
 ]
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
-_KNOWN_PROBLEMATIC_CHARS = {"\uA9C5", "\U0001242B"}
+_KNOWN_PROBLEMATIC_CHARS = {"\ua9c5", "\U0001242b"}
 
 
 def _normalize_planning_stage(stage: str | None) -> str:
@@ -258,7 +258,10 @@ async def send_message(
                 from app.db.session import async_session_maker
 
                 # Prefer titling directly from the very first user query.
-                if len(history_msgs) == 1 and history_msgs[0].sender_role == MessageSenderRole.user:
+                if (
+                    len(history_msgs) == 1
+                    and history_msgs[0].sender_role == MessageSenderRole.user
+                ):
                     title_seed: str | list[dict[str, str]] = payload.content
                 else:
                     context = []

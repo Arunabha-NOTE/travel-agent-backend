@@ -311,9 +311,9 @@ async def refresh_token(
     db: AsyncSession = Depends(get_db),
 ):
     """Exchange a valid refresh token for a new access token."""
-    refresh_token_value = (payload.refresh_token if payload else None) or request.cookies.get(
-        settings.AUTH_REFRESH_COOKIE_NAME
-    )
+    refresh_token_value = (
+        payload.refresh_token if payload else None
+    ) or request.cookies.get(settings.AUTH_REFRESH_COOKIE_NAME)
     if not refresh_token_value:
         raise UnauthorizedError("Missing refresh token")
 
@@ -367,9 +367,9 @@ async def logout(
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke an active refresh-token session."""
-    refresh_token_value = (payload.refresh_token if payload else None) or request.cookies.get(
-        settings.AUTH_REFRESH_COOKIE_NAME
-    )
+    refresh_token_value = (
+        payload.refresh_token if payload else None
+    ) or request.cookies.get(settings.AUTH_REFRESH_COOKIE_NAME)
     if refresh_token_value is None:
         _clear_auth_cookies(response, request)
         return {"message": "Logged out successfully"}
