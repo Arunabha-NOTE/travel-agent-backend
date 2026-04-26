@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://141.148.203.99:4318"
     OTEL_EXPORTER_OTLP_PROTOCOL: str = "http/protobuf"
     OTEL_TRACES_EXPORTER: str = "none"
+    OTEL_LOGS_EXPORTER: str = "none"
 
     # === Database Configuration ===
     SQLALCHEMY_DATABASE_URI: str

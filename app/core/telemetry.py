@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from opentelemetry import trace
+import logging
+from opentelemetry import trace, _logs
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
@@ -25,7 +29,7 @@ def get_tracer(name: str):
 
 
 def setup_telemetry(engine: AsyncEngine | None = None) -> None:
-    """Initialize OpenTelemetry with tracing to Tempo."""
+    """Initialize OpenTelemetry with tracing and logging."""
     global _telemetry_initialized
 
     if _telemetry_initialized:
@@ -40,18 +44,28 @@ def setup_telemetry(engine: AsyncEngine | None = None) -> None:
         }
     )
 
-    # Set up trace provider
-    provider = TracerProvider(resource=resource)
-
-    # Configure OTLP exporter (only if enabled)
+    # === Trace Setup ===
+    trace_provider = TracerProvider(resource=resource)
     if settings.OTEL_TRACES_EXPORTER == "otlp":
-        exporter = OTLPSpanExporter(
+        trace_exporter = OTLPSpanExporter(
             endpoint=f"{settings.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces"
         )
-        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
 
-    # Set global tracer provider
-    trace.set_tracer_provider(provider)
+    trace.set_tracer_provider(trace_provider)
+
+    # === Logs Setup ===
+    if settings.OTEL_LOGS_EXPORTER == "otlp":
+        log_provider = LoggerProvider(resource=resource)
+        log_exporter = OTLPLogExporter(
+            endpoint=f"{settings.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/logs"
+        )
+        log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+        _logs.set_logger_provider(log_provider)
+
+        # Add the OTLP LoggingHandler to the root logger
+        handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+        logging.getLogger().addHandler(handler)
 
     # Auto-instrument libraries
     if not RequestsInstrumentor().is_instrumented_by_opentelemetry:
@@ -71,7 +85,8 @@ def setup_telemetry(engine: AsyncEngine | None = None) -> None:
         "OpenTelemetry initialized",
         service_name=settings.OTEL_SERVICE_NAME,
         environment=settings.ENVIRONMENT,
-        exporter=settings.OTEL_TRACES_EXPORTER,
+        traces_exporter=settings.OTEL_TRACES_EXPORTER,
+        logs_exporter=settings.OTEL_LOGS_EXPORTER,
     )
     _telemetry_initialized = True
 
