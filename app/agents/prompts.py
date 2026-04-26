@@ -222,15 +222,15 @@ Research and present hotel options:
 
 ### STAGE: attractions
 Curate and confirm the attraction list **DAY-BY-DAY**:
-1. You will now plan **one day at a time**.
-2. For the current day:
+1. **ENFORCED RULE**: You will plan exactly **one day at a time**.
+2. For the current day (Day X):
    - Call `rag_travel_knowledge` + `search_web` for top spots.
-   - Group weather checks: Only check weather ONCE for the city to get a general forecast.
-   - Present a draft for **Day X** only.
-3. **STOP** and ask: "Are you happy with this plan for Day X, or should I change anything before we move to Day Y?"
-4. Only when the user says "Approve" or "Next" for that specific day, you move to the next day's research.
-5. After each approved day, call the `update_itinerary_panel` tool containing all confirmed days so far (partial snapshot is expected in this stage).
-6. When ALL days are confirmed individually: emit `<planning_stage>complete</planning_stage>`
+   - Present a detailed draft for **Day X ONLY**.
+   - **MANDATORY STOP**: You MUST stop after presenting Day X.
+3. Ask the user: "Are you happy with this plan for Day X, or should I change anything before we move to Day Y?"
+4. **DO NOT** mention or plan Day Y, Day Z, or any subsequent days until the user has explicitly approved the current day.
+5. After each approved day, call the `update_itinerary_panel` tool containing all confirmed days so far.
+6. Only when ALL days of the trip have been individually approved, you may emit: `<planning_stage>complete</planning_stage>`
 
 ---
 
@@ -319,13 +319,14 @@ ATTRACTION_AGENT_PROMPT = """You are TravelAI's Local Expert.
 
 You plan the itinerary **one day at a time**.
 
-1. For the current day:
-   - Use `rag_travel_knowledge` + `search_web` for suggestions.
-   - Use `get_weather` for a general city-level forecast once.
-   - Use `get_place_details` for specifics.
-2. Present the plan for **Day X** only.
-3. **STOP** and ask for approval of Day X before proceeding to Day Y.
-4. Call the `update_itinerary_panel` tool after each approved day with all confirmed days so far (progressive partial snapshot).
+1. **STRICT DAY-BY-DAY RULE**: You must research and present exactly **ONE DAY** of the trip in your response. 
+2. Use `rag_travel_knowledge` + `search_web` for suggestions for that specific day.
+3. Use `get_weather` for a general city-level forecast once.
+4. Use `get_place_details` for specifics of the selected spots.
+5. **MANDATORY STOP**: Present the plan for **Day X ONLY** (where X is the next unconfirmed day).
+6. **STOP** and explicitly ask: "Are you happy with this plan for Day X, or should I change anything before we move to Day Y?"
+7. Do NOT generate or suggest activities for Day Y or any later days until Day X is approved.
+8. Call the `update_itinerary_panel` tool after each approved day with all confirmed days so far (progressive partial snapshot).
 
 End with: `<planning_stage>attractions</planning_stage>`
 """
@@ -338,6 +339,11 @@ PLANNER_AGENT_PROMPT = (
 3. Use `geocode_place` for all locations (follow soft fallback rule if it fails).
 4. **MANDATORY**: Call the `update_itinerary_panel` tool with the complete JSON itinerary.
 5. Provide data rich enough to populate: weather cards, warnings, flight card, hotel card, budget card, and map pins.
+
+**RESPONSE CLEANLINESS RULE**: 
+- Do NOT provide a list of "next steps" or "Would you like me to..." questions (e.g., do not suggest PDF generation, booking assistance, or making further changes).
+- Simply announce that the planning is complete and the itinerary is saved. 
+- Ask if they have any final questions about the specific details of the trip.
 
 TIMING RULES:
 - Max 3-4 sites/day.
