@@ -2081,6 +2081,10 @@ async def run_langchain_agent(
     completion_tokens = 0
     yielded_preflight_steps: set[str] = set()
 
+    from app.agents.tools.utils import user_id_context
+
+    user_id_context.set(user_id)
+
     try:
         for step_token in [
             "[STEP:🕒 Synchronizing clock...]",

@@ -6,9 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from contextvars import ContextVar
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Context variable to store the current user_id for tools
+user_id_context: ContextVar[int | None] = ContextVar("user_id", default=None)
 
 
 @dataclass(slots=True)
@@ -26,10 +31,14 @@ def persist_tool_result(
     metadata: dict[str, Any] | None = None,
     status: str = "ok",
     user_id: int | None = None,
+    is_public: bool = False,
 ) -> None:
     """Persist tool outputs/errors so later runs can fall back to KB context."""
     try:
         from app.agents.rag.vector_store import add_to_knowledge_base
+
+        # Use context variable if user_id is not provided
+        effective_user_id = user_id if user_id is not None else user_id_context.get()
 
         meta = dict(metadata or {})
         meta.update(
@@ -39,7 +48,9 @@ def persist_tool_result(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
-        add_to_knowledge_base(text=text, metadata=meta, user_id=user_id)
+        add_to_knowledge_base(
+            text=text, metadata=meta, user_id=effective_user_id, is_public=is_public
+        )
     except Exception as e:
         logger.warning("Failed to persist tool result", tool=tool_name, error=str(e))
 

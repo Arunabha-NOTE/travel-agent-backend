@@ -9,7 +9,7 @@ from app.agents.tools.utils import persist_tool_result
 
 
 @tool
-async def search_web(query: str, limit: int = 5) -> str:
+async def search_web(query: str, limit: int = 5, is_public: bool = False) -> str:
     """Search the web for travel-related URLs and snippets using Firecrawl.
 
     Use this tool to find up-to-date links, articles, recommendations, and news about a
@@ -18,9 +18,7 @@ async def search_web(query: str, limit: int = 5) -> str:
     Args:
         query: The search query string (e.g. "best temples to visit in Kyoto").
         limit: Number of results to retrieve (default 5).
-
-    Returns:
-        A list of search results featuring Title, URL, and a short snippet.
+        is_public: Set to True if this search result is generic (e.g. destination guides, general tips) and useful for everyone.
     """
     try:
         from firecrawl.v1 import V1FirecrawlApp
@@ -70,6 +68,7 @@ async def search_web(query: str, limit: int = 5) -> str:
             f"Web search links for '{query}':\n{results_str}",
             metadata={"query": query, "limit": limit},
             status="ok" if parts else "empty",
+            is_public=is_public,
         )
         return results_str
 
@@ -81,13 +80,17 @@ async def search_web(query: str, limit: int = 5) -> str:
         )
         output = f"Web search unavailable (error: {e}). Use your training knowledge."
         persist_tool_result(
-            "search_web", output, metadata={"query": query}, status="error"
+            "search_web",
+            output,
+            metadata={"query": query},
+            status="error",
+            is_public=is_public,
         )
         return output
 
 
 @tool
-async def scrape_website(url: str) -> str:
+async def scrape_website(url: str, is_public: bool = False) -> str:
     """Scrape the full markdown content of a specific website URL.
 
     Use this tool after you find a promising link via search_web, or if the user provided a URL.
@@ -95,9 +98,7 @@ async def scrape_website(url: str) -> str:
 
     Args:
         url: The absolute HTTP/HTTPS URL of the site to scrape.
-
-    Returns:
-        The markdown content extracted from the website text.
+        is_public: Set to True if this content is general (e.g. a blog post, travel guide) and useful for the global knowledge base.
     """
     try:
         from firecrawl.v1 import V1FirecrawlApp
@@ -129,6 +130,7 @@ async def scrape_website(url: str) -> str:
             f"Scraped content from {url}, length: {len(content)}",
             metadata={"url": url},
             status="ok",
+            is_public=is_public,
         )
         return content
 
@@ -140,6 +142,10 @@ async def scrape_website(url: str) -> str:
         )
         output = f"Failed to scrape website {url} (error: {e})."
         persist_tool_result(
-            "scrape_website", output, metadata={"url": url}, status="error"
+            "scrape_website",
+            output,
+            metadata={"url": url},
+            status="error",
+            is_public=is_public,
         )
         return output

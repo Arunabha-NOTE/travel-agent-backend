@@ -9,16 +9,16 @@ from app.agents.tools.utils import persist_tool_result
 
 
 @tool
-async def get_weather(lat: float, lon: float, days: int = 7) -> str:
+async def get_weather(
+    lat: float, lon: float, days: int = 7, is_public: bool = False
+) -> str:
     """Fetch current and forecast weather for a location.
 
     Args:
         lat: Latitude of the location.
         lon: Longitude of the location.
         days: Number of forecast days (1-16, default 7).
-
-    Returns:
-        Human-readable weather summary string.
+        is_public: Set to True if this weather data is for a general city and useful for everyone today.
     """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -97,6 +97,7 @@ async def get_weather(lat: float, lon: float, days: int = 7) -> str:
             output,
             metadata={"lat": lat, "lon": lon, "days": min(days, 16)},
             status="ok",
+            is_public=is_public,
         )
         return output
 
@@ -111,5 +112,6 @@ async def get_weather(lat: float, lon: float, days: int = 7) -> str:
             output,
             metadata={"lat": lat, "lon": lon, "days": min(days, 16), "error": str(e)},
             status="error",
+            is_public=is_public,
         )
         return output

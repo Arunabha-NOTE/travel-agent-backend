@@ -19,7 +19,7 @@ _api_lock = asyncio.Lock()
 
 
 @tool
-async def geocode_place(place_name: str) -> str:
+async def geocode_place(place_name: str, is_public: bool = True) -> str:
     """Geocode a place name to latitude/longitude with RAG-first strategy to save API credits.
 
     Strategy:
@@ -30,9 +30,7 @@ async def geocode_place(place_name: str) -> str:
 
     Args:
         place_name: The name of the place to geocode (e.g. "Kyoto, Japan").
-
-    Returns:
-        JSON-like string with lat, lon, display_name, and country.
+        is_public: Set to True if this geocoding result is for a generic public place (monument, city, hotel) and should be shared. Default is True.
     """
     logger.info("Geocode requested", place_name=place_name)
 
@@ -62,7 +60,13 @@ async def geocode_place(place_name: str) -> str:
                     f"RAG geocoding successful for {place_name} - API CREDIT SAVED"
                 )
                 return _format_geocode_result(
-                    place_name, display, lat, lon, country, "vector_kb"
+                    place_name,
+                    display,
+                    lat,
+                    lon,
+                    country,
+                    "vector_kb",
+                    is_public=is_public,
                 )
     except Exception as e:
         logger.debug(f"RAG geocoding lookup failed: {str(e)}")
@@ -103,7 +107,13 @@ async def geocode_place(place_name: str) -> str:
                             country=country,
                         )
                         return _format_geocode_result(
-                            place_name, display, lat, lon, country, "google_maps"
+                            place_name,
+                            display,
+                            lat,
+                            lon,
+                            country,
+                            "google_maps",
+                            is_public=is_public,
                         )
                     logger.warning(
                         "Google Maps geocode returned no usable result",
@@ -142,7 +152,13 @@ async def geocode_place(place_name: str) -> str:
                         country=country,
                     )
                     return _format_geocode_result(
-                        place_name, display, lat, lon, country, "nominatim"
+                        place_name,
+                        display,
+                        lat,
+                        lon,
+                        country,
+                        "nominatim",
+                        is_public=is_public,
                     )
 
         output = f"Could not find location '{place_name}' after multiple attempts."
@@ -152,6 +168,7 @@ async def geocode_place(place_name: str) -> str:
             output,
             metadata={"place_name": place_name},
             status="empty",
+            is_public=is_public,
         )
         return output
 
@@ -166,12 +183,19 @@ async def geocode_place(place_name: str) -> str:
             output,
             metadata={"place_name": place_name, "error": str(e)},
             status="error",
+            is_public=is_public,
         )
         return output
 
 
 def _format_geocode_result(
-    original_name: str, display: str, lat: float, lon: float, country: str, source: str
+    original_name: str,
+    display: str,
+    lat: float,
+    lon: float,
+    country: str,
+    source: str,
+    is_public: bool = True,
 ) -> str:
     """Helper to format and persist geocode results."""
     logger.info(
@@ -201,6 +225,7 @@ def _format_geocode_result(
             "country": country,
         },
         status="ok",
+        is_public=is_public,
     )
 
     return result_text

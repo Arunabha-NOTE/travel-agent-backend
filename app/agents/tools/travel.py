@@ -1387,6 +1387,7 @@ async def search_flights(
     max_duration: str | None = None,
     currency: str = "USD",
     force_live_data: bool = False,
+    is_public: bool = False,
 ) -> str:
     """Search for flights via Google Flights (SERP API).
     Returns exact LIVE pricing and schedules as JSON. Pass the response JSON as is to the user.
@@ -1398,6 +1399,7 @@ async def search_flights(
         return_date: Return date in YYYY-MM-DD.
         type: "1" for Round trip, "2" for One-way, "3" for Multi-city.
         travel_class: "1" (Economy), "2" (Premium Economy), "3" (Business), "4" (First).
+        is_public: Set to True if this result is generic (e.g. common flight options between major cities) and should be shared in the global knowledge base. Set to False for highly personalized or sensitive searches.
         multi_city_json: Used if type is 3. Format: '[{"departure_id":"CDG","arrival_id":"NRT","date":"2026-04-25"}]'.
         show_hidden: "true" to include hidden itineraries.
         exclude_basic: "true" to exclude basic economy.
@@ -1552,6 +1554,7 @@ async def search_flights(
             "departure_date": outbound_date,
         },
         status="ok" if result else "missing",
+        is_public=is_public,
     )
 
     return response_str
@@ -1574,6 +1577,7 @@ async def search_hotels(
     free_cancellation: str | None = None,
     currency: str = "USD",
     force_live_data: bool = False,
+    is_public: bool = False,
 ) -> str:
     """Search for hotels via Google Hotels (SERP API).
     Returns raw JSON dict with exact properties. Pass the JSON response as is to the user.
@@ -1594,6 +1598,7 @@ async def search_hotels(
         free_cancellation: "true" to filter for free cancellation.
         currency: Pricing currency ("USD", "INR").
         force_live_data: Force fresh SERP API lookup bypassing internal caching.
+        is_public: Set to True if this result is generic (e.g. hotel lists for a city) and should be shared in the global knowledge base. Set to False for specific or private hotel searches.
     """
     from app.core.logging import get_logger
     from app.agents.tools.utils import persist_tool_result
@@ -1647,6 +1652,7 @@ async def search_hotels(
             "check_out": check_out_date,
         },
         status="ok" if result else "missing",
+        is_public=is_public,
     )
 
     return response_str
@@ -1657,18 +1663,16 @@ async def get_place_details(
     place_name: str,
     city: str,
     detail_type: str = "all",
+    is_public: bool = False,
 ) -> str:
     """Get current details for a tourist attraction, transit route, or local info.
-
-    Use this tool for every confirmed attraction to get up-to-date ticket prices,
-    opening hours, advance booking requirements, and local transit options.
-    Also use it to answer "how do I get from X to Y by metro/bus".
 
     Args:
         place_name: Attraction, landmark, or route (e.g. "Eiffel Tower",
                     "Louvre Museum", "Metro Line 1 Paris", "Versailles from Paris")
         city: City name (e.g. "Paris", "Rome", "Tokyo")
         detail_type: "tickets" | "transit" | "hours" | "all"
+        is_public: Set to True if this info is general (e.g. monument hours, metro routes) and useful for all users. Set to False for very specific lookups.
     """
     logger.info(
         "Place details lookup requested",
@@ -1759,6 +1763,7 @@ async def get_place_details(
             "detail_type": detail_type,
         },
         status=status,
+        is_public=is_public,
     )
     _log_tool_outcome(
         "get_place_details",
@@ -1783,12 +1788,9 @@ async def search_ground_transport(
     date: str,
     transport_type: str = "all",
     currency: str | None = None,
+    is_public: bool = False,
 ) -> str:
     """Search for ground transport options (Trains, Buses, Cabs, Shuttles).
-
-    Use this for regional travel (e.g. Pune to Mumbai) or last-mile connectivity.
-    It researches services like IRCTC, RedBus, Trainline, Omio, and Uber/Ola estimates.
-    Also considers "Hotel Travel Desk" as a reliable option for local booking.
 
     Args:
         origin: Departure point (e.g. "Pune Station", "CDG Airport")
@@ -1796,6 +1798,7 @@ async def search_ground_transport(
         date: YYYY-MM-DD
         transport_type: "train" | "bus" | "cab" | "all"
         currency: Preferred currency for results (e.g. "INR", "USD")
+        is_public: Set to True if this result is generic (e.g. standard bus/train schedules) and should be shared globally. Set to False for private cab bookings or specific trips.
     """
     logger.info(
         "Ground transport search requested",
@@ -1904,6 +1907,7 @@ async def search_ground_transport(
             "source_layer": source_layer,
         },
         status="ok" if source_layer != "model_prior" else "fallback",
+        is_public=is_public,
     )
     _log_tool_outcome(
         "search_ground_transport",
@@ -1937,8 +1941,9 @@ async def get_airport_transit(
     airport_name: str,
     from_terminal: str,
     to_terminal: str,
+    is_public: bool = False,
 ) -> str:
-    r"""Get transit time and method between terminals at an airport.
+    """Get transit time and method between terminals at an airport.
 
     Use this whenever a passenger has a layover and needs to change terminals
     (e.g. Mumbai BOM T1 domestic to T2 international, CDG "Terminal 1" to "Terminal 2E").
@@ -1947,6 +1952,7 @@ async def get_airport_transit(
         airport_name: Full airport name or city (e.g. "Mumbai", "Charles de Gaulle")
         from_terminal: Departure terminal (e.g. "T1", "Terminal 1", "domestic")
         to_terminal: Arrival terminal (e.g. "T2", "Terminal 2E", "international")
+        is_public: Set to True if this info is generic (e.g. airport terminal shuttle info) and useful for everyone.
     """
     logger.info(
         "Airport transit lookup requested",
@@ -2004,7 +2010,13 @@ async def get_airport_transit(
             "from_terminal": from_terminal,
             "to_terminal": to_terminal,
         },
-        status="ok" if raw and "[search_error:" not in raw else "fallback",
+        status="ok"
+        if (
+            not info_res.startswith("Terminal transit info for")
+            and "[search_error:" not in info_res
+        )
+        else "fallback",
+        is_public=is_public,
     )
 
     return info_res
