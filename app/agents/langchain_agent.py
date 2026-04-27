@@ -2036,6 +2036,7 @@ async def run_langchain_agent(
     user_message: str,
     history: list[dict[str, Any]],
     db: AsyncSession,
+    user_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the multi-step LangChain travel agent and stream tokens.
 
@@ -2091,7 +2092,10 @@ async def run_langchain_agent(
 
         async for event in executor.astream_events(
             {"messages": chat_history + [HumanMessage(content=user_message)]},
-            {"recursion_limit": 40},
+            {
+                "recursion_limit": 40,
+                "configurable": {"user_id": user_id, "chat_id": str(chat_id)},
+            },
             version="v2",
         ):
             kind = event.get("event", "")
@@ -2451,7 +2455,7 @@ async def run_langchain_agent(
 
             add_to_knowledge_base(
                 text=(
-                    f"Assistant response (langchain) for chat {chat_id}:\n"
+                    f"Assistant response (langchain):\n"
                     f"{clean_response}\n\n"
                     f"Planning stage: {new_stage or 'unknown'}"
                 ),
@@ -2460,6 +2464,7 @@ async def run_langchain_agent(
                     "chat_id": str(chat_id),
                     "stage": new_stage or "unknown",
                 },
+                user_id=user_id,
             )
         except Exception as kb_err:
             logger.warning(

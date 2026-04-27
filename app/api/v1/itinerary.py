@@ -23,6 +23,19 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/chats", tags=["itinerary"])
 
 
+class ShareStatusRequest(BaseModel):
+    """Request schema for share status toggle."""
+
+    is_public: bool
+
+
+class ShareStatusResponse(BaseModel):
+    """Response schema for share status toggle."""
+
+    chat_id: uuid.UUID
+    is_public: bool
+
+
 class ItineraryResponse(BaseModel):
     """Response schema for a chat itinerary."""
 
@@ -124,3 +137,70 @@ async def get_itinerary(
         generated_at=itinerary.generated_at,
         updated_at=itinerary.updated_at,
     )
+
+
+@router.get("/{chat_id}/itinerary/public", response_model=ItineraryResponse)
+async def get_public_itinerary(
+    chat_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the latest generated travel itinerary for a chat room publicly.
+
+    Only works if the chat room is marked as public.
+    """
+    # Verify chat is public
+    chat_result = await db.execute(
+        select(ChatRoom).where(
+            and_(
+                ChatRoom.id == chat_id,
+                ChatRoom.is_public,
+                ChatRoom.archived_at.is_(None),
+            )
+        )
+    )
+    if not chat_result.scalars().first():
+        raise ResourceNotFoundError(resource="PublicChatRoom", resource_id=chat_id)
+
+    # Fetch itinerary
+    result = await db.execute(
+        select(ChatItinerary).where(ChatItinerary.chat_room_id == chat_id)
+    )
+    itinerary = result.scalars().first()
+
+    if itinerary is None:
+        raise ResourceNotFoundError(resource="ChatItinerary", resource_id=chat_id)
+
+    return ItineraryResponse(
+        id=itinerary.id,
+        chat_room_id=itinerary.chat_room_id,
+        itinerary_data=itinerary.itinerary_data,
+        generated_at=itinerary.generated_at,
+        updated_at=itinerary.updated_at,
+    )
+
+
+@router.patch("/{chat_id}/share", response_model=ShareStatusResponse)
+async def toggle_share_itinerary(
+    chat_id: uuid.UUID,
+    payload: ShareStatusRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle the public visibility of a chat itinerary."""
+    is_public = payload.is_public
+    chat_result = await db.execute(
+        select(ChatRoom).where(
+            and_(
+                ChatRoom.id == chat_id,
+                ChatRoom.user_id == current_user.id,
+            )
+        )
+    )
+    chat = chat_result.scalars().first()
+    if not chat:
+        raise ResourceNotFoundError(resource="ChatRoom", resource_id=chat_id)
+
+    chat.is_public = is_public
+    await db.commit()
+
+    return ShareStatusResponse(chat_id=chat_id, is_public=is_public)

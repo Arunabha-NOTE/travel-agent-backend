@@ -266,6 +266,7 @@ async def run_langgraph_agent(
     user_message: str,
     history: list[dict[str, Any]],
     db: AsyncSession,
+    user_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     # Extract dynamic context
     dynamic_context = ""
@@ -354,7 +355,10 @@ async def run_langgraph_agent(
                 "is_valid": False,
                 "latest_reflection": None,
             },
-            {"recursion_limit": 40},
+            {
+                "recursion_limit": 40,
+                "configurable": {"user_id": user_id, "chat_id": str(chat_id)},
+            },
             version="v2",
         ):
             kind = event.get("event", "")
@@ -655,7 +659,7 @@ async def run_langgraph_agent(
 
                 add_to_knowledge_base(
                     text=(
-                        f"Assistant response (langgraph) for chat {chat_id}:\n"
+                        f"Assistant response (langgraph):\n"
                         f"{clean_response}\n\n"
                         f"Planning stage: {parsed_stage or 'unknown'}"
                     ),
@@ -664,6 +668,7 @@ async def run_langgraph_agent(
                         "chat_id": str(chat_id),
                         "stage": parsed_stage or "unknown",
                     },
+                    user_id=user_id,
                 )
             except Exception as kb_err:
                 logger.warning(

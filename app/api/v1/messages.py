@@ -439,6 +439,7 @@ async def send_message(
                     user_message=payload.content,
                     history=history,
                     db=db,
+                    user_id=current_user.id,
                 )
             else:
                 from app.agents.langgraph_agent import run_langgraph_agent
@@ -448,6 +449,7 @@ async def send_message(
                     user_message=payload.content,
                     history=history,
                     db=db,
+                    user_id=current_user.id,
                 )
 
             async for token in gen:

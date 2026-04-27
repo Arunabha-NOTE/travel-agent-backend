@@ -45,6 +45,7 @@ class ChatRoom(Base):
         nullable=True,
         index=True,
     )
+    is_public: Mapped[bool] = mapped_column(default=True)
 
     messages: Mapped[list["ChatMessage"]] = relationship(
         back_populates="chat_room",

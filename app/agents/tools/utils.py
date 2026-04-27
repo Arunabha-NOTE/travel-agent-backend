@@ -25,6 +25,7 @@ def persist_tool_result(
     text: str,
     metadata: dict[str, Any] | None = None,
     status: str = "ok",
+    user_id: int | None = None,
 ) -> None:
     """Persist tool outputs/errors so later runs can fall back to KB context."""
     try:
@@ -38,23 +39,38 @@ def persist_tool_result(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
-        add_to_knowledge_base(text=text, metadata=meta)
+        add_to_knowledge_base(text=text, metadata=meta, user_id=user_id)
     except Exception as e:
         logger.warning("Failed to persist tool result", tool=tool_name, error=str(e))
 
 
-async def get_kb_fallback(query: str, k: int = 3) -> str:
+async def get_kb_fallback(query: str, k: int = 3, user_id: int | None = None) -> str:
     """Fetch concise fallback context from vector DB."""
     try:
         from app.agents.rag.vector_store import get_retriever
 
-        retriever = get_retriever(k=k)
-        docs = await retriever.ainvoke(query)
-        if not docs:
+        # Search user-specific and public
+        user_docs = []
+        if user_id is not None:
+            user_retriever = get_retriever(k=k, filter={"user_id": user_id})
+            user_docs = await user_retriever.ainvoke(query)
+
+        public_retriever = get_retriever(k=k, filter={"is_public": True})
+        public_docs = await public_retriever.ainvoke(query)
+
+        # Merge and deduplicate
+        seen = set()
+        all_docs = []
+        for doc in user_docs + public_docs:
+            if doc.page_content not in seen:
+                all_docs.append(doc)
+                seen.add(doc.page_content)
+
+        if not all_docs:
             return ""
 
         parts: list[str] = []
-        for i, doc in enumerate(docs, 1):
+        for i, doc in enumerate(all_docs[:k], 1):
             source = doc.metadata.get("source", "knowledge_base")
             content = (doc.page_content or "").strip()
             if not content:
@@ -67,12 +83,15 @@ async def get_kb_fallback(query: str, k: int = 3) -> str:
         return ""
 
 
-async def get_kb_fallback_docs(query: str, k: int = 3) -> list[KBFallbackDoc]:
+async def get_kb_fallback_docs(
+    query: str, k: int = 3, user_id: int | None = None
+) -> list[KBFallbackDoc]:
     """Fetch raw KB fallback documents with metadata for date-aware filtering."""
     try:
         from app.agents.rag.vector_store import get_retriever
 
-        retriever = get_retriever(k=k)
+        kb_filter = {"user_id": user_id} if user_id is not None else None
+        retriever = get_retriever(k=k, filter=kb_filter)
         docs = await retriever.ainvoke(query)
         if not docs:
             return []
