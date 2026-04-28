@@ -23,7 +23,9 @@ from app.agents.prompts import (
     MAIN_SYSTEM_PROMPT,
 )
 from app.agents.tool_suite import AGENT_TOOLS
+from sqlalchemy import select
 from app.agents.langchain_agent import (
+    calculate_minimax_cost,
     _apply_fact_grounding_notice_if_needed,
     _clean_stage_value,
     _extract_itinerary,
@@ -50,6 +52,7 @@ from app.agents.langchain_agent import (
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
+from app.models.user import User
 
 logger = get_logger(__name__)
 
@@ -83,6 +86,7 @@ def _build_llm(streaming: bool = True) -> ChatOpenAI:
         streaming=streaming,
         max_retries=2,
         max_tokens=20000,
+        stream_options={"include_usage": True} if streaming else None,
     )
 
 
@@ -301,6 +305,8 @@ async def run_langgraph_agent(
     saw_itinerary_tool_call = False
     grounding_tools_used: set[str] = set()
     yielded_preflight_steps: set[str] = set()
+    prompt_tokens = 0
+    completion_tokens = 0
 
     def _score_candidate(text: str) -> int:
         if not text:
@@ -479,26 +485,62 @@ async def run_langgraph_agent(
             # LLM Streaming tokens
             elif kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    token = chunk.content
-                    full_response += token
-                    # Yield tokens to UI. We prioritize showing SOMETHING over showing nothing.
-                    if not node_name or "planner" in node_name:
-                        yield token
+                if chunk:
+                    if hasattr(chunk, "content") and chunk.content:
+                        token = chunk.content
+                        full_response += token
+                        # Yield tokens to UI. We prioritize showing SOMETHING over showing nothing.
+                        if not node_name or "planner" in node_name:
+                            yield token
+
+                    # Also capture usage from the last chunk if present
+                    usage = getattr(chunk, "usage_metadata", None)
+                    if usage:
+                        prompt_tokens += (
+                            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+                        )
+                        completion_tokens += (
+                            usage.get("output_tokens")
+                            or usage.get("completion_tokens")
+                            or 0
+                        )
 
             # Capture the final AI message content and try to extract itinerary
             elif kind == "on_chat_model_end":
                 output = event.get("data", {}).get("output")
-                if output and hasattr(output, "content") and output.content:
-                    content = _message_content_to_text(output.content)
-                    # If this node is the planner, it becomes our main response
-                    if not node_name or "planner" in node_name:
-                        last_message_content = content
-                        planner_candidates.append(content)
+                if output:
+                    # Capture usage from final output
+                    usage = getattr(output, "usage_metadata", None)
+                    if not usage:
+                        resp_meta = getattr(output, "response_metadata", {})
+                        usage = (
+                            resp_meta.get("token_usage")
+                            or output.additional_kwargs.get("usage")
+                            or output.additional_kwargs.get("token_usage")
+                        )
 
-                    # Proactively check for itinerary in ANY message (safety backup)
-                    maybe_stage = _extract_planning_stage(content)
-                    maybe_itinerary = _extract_itinerary(content, log_on_failure=False)
+                    if usage:
+                        prompt_tokens += (
+                            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+                        )
+                        completion_tokens += (
+                            usage.get("output_tokens")
+                            or usage.get("completion_tokens")
+                            or 0
+                        )
+
+                    if hasattr(output, "content") and output.content:
+                        content = _message_content_to_text(output.content)
+                        # If this node is the planner, it becomes our main response
+                        if not node_name or "planner" in node_name:
+                            last_message_content = content
+                            planner_candidates.append(content)
+
+                        # Proactively check for itinerary in ANY message (safety backup)
+                        maybe_stage = _extract_planning_stage(content)
+                        maybe_itinerary = _extract_itinerary(
+                            content, log_on_failure=False
+                        )
                     if maybe_itinerary is None and _should_attempt_itinerary_repair(
                         content,
                         parsed_stage=maybe_stage,
@@ -630,13 +672,27 @@ async def run_langgraph_agent(
             if not clean_response and not parsed_itinerary:
                 clean_response = "I have processed your request. Please let me know if you would like to make any adjustments."
 
+            msg_cost = calculate_minimax_cost(prompt_tokens, completion_tokens)
             assistant_msg = ChatMessage(
                 chat_room_id=chat_id,
                 sender_role=MessageSenderRole.assistant,
                 content=clean_response,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_cost=msg_cost,
                 message_metadata={"agent": "langgraph"},
             )
             db.add(assistant_msg)
+
+            # Update user aggregate usage
+            if user_id:
+                user_res = await db.execute(select(User).where(User.id == user_id))
+                user = user_res.scalars().first()
+                if user:
+                    user.total_tokens += prompt_tokens + completion_tokens
+                    user.total_cost += msg_cost
+                    user.token_usage_millions = float(user.total_tokens) / 1_000_000.0
+
             await db.flush()
 
             if parsed_itinerary:

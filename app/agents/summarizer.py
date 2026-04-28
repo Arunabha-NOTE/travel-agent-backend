@@ -4,20 +4,22 @@ from sqlalchemy import select
 from app.core.logging import get_logger
 from app.models.chat_message import ChatMessage, MessageSenderRole
 from app.models.chat_room import ChatRoom
+from app.models.user import User
 from app.core.config import settings
+from app.agents.langchain_agent import calculate_minimax_cost
 
 logger = get_logger(__name__)
 
 
 async def _summarize_with_minimax(
     old_summary: str | None, new_messages: list[ChatMessage]
-) -> str | None:
+) -> tuple[str | None, int, int]:
     import re
     from openai import AsyncOpenAI
 
     if not settings.LLM_API_KEY or settings.LLM_API_KEY == "changeme":
         logger.warning("No LLM API key configured. Skipping summarize.")
-        return None
+        return None, 0, 0
 
     client = AsyncOpenAI(
         api_key=settings.LLM_API_KEY,
@@ -49,10 +51,15 @@ async def _summarize_with_minimax(
         raw = response.choices[0].message.content or ""
         # Strip <think>...</think> reasoning blocks that minimax-m2.7 emits
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
-        return raw.strip() or None
+
+        usage = response.usage
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+
+        return raw.strip() or None, prompt_tokens, completion_tokens
     except Exception as e:
         logger.error("Failed to generate summary with Minimax", error=str(e))
-        return None
+        return None, 0, 0
 
 
 async def check_and_summarize(chat_id: uuid.UUID):
@@ -93,20 +100,39 @@ async def check_and_summarize(chat_id: uuid.UUID):
                 if not room:
                     return
 
-                new_summary = await _summarize_with_minimax(
-                    room.context_summary, target_msgs
-                )
+                (
+                    new_summary,
+                    s_prompt_tokens,
+                    s_completion_tokens,
+                ) = await _summarize_with_minimax(room.context_summary, target_msgs)
 
                 if new_summary:
                     room.context_summary = new_summary
                     for msg in target_msgs:
                         msg.is_summarized = True
 
+                    # Update user aggregate usage for summarization cost
+                    if room.user_id:
+                        user_res = await bg_db.execute(
+                            select(User).where(User.id == room.user_id)
+                        )
+                        user = user_res.scalars().first()
+                        if user:
+                            msg_cost = calculate_minimax_cost(
+                                s_prompt_tokens, s_completion_tokens
+                            )
+                            user.total_tokens += s_prompt_tokens + s_completion_tokens
+                            user.total_cost += msg_cost
+                            user.token_usage_millions = (
+                                float(user.total_tokens) / 1_000_000.0
+                            )
+
                     await bg_db.commit()
                     logger.info(
-                        "Chat context summarized successfully",
+                        "Chat context summarized and usage updated",
                         chat_id=str(chat_id),
                         msg_count=len(target_msgs),
+                        tokens=s_prompt_tokens + s_completion_tokens,
                     )
             else:
                 logger.info(

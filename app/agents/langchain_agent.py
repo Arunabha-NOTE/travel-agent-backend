@@ -1051,6 +1051,7 @@ def _build_llm(streaming: bool = True) -> ChatOpenAI:
         temperature=0.7,
         streaming=streaming,
         max_tokens=20000,  # Ensure enough space for full itineraries
+        stream_options={"include_usage": True} if streaming else None,
     )
 
 
@@ -2246,10 +2247,23 @@ async def run_langchain_agent(
             # Stream LLM text tokens
             elif kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    token = chunk.content
-                    full_response += token
-                    yield token
+                if chunk:
+                    if hasattr(chunk, "content") and chunk.content:
+                        token = chunk.content
+                        full_response += token
+                        yield token
+
+                    # Also capture usage from the last chunk if present
+                    usage = getattr(chunk, "usage_metadata", None)
+                    if usage:
+                        prompt_tokens += (
+                            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+                        )
+                        completion_tokens += (
+                            usage.get("output_tokens")
+                            or usage.get("completion_tokens")
+                            or 0
+                        )
 
             # Capture usage from the end of LLM calls
             elif kind == "on_chat_model_end":
@@ -2322,17 +2336,26 @@ async def run_langchain_agent(
                                     error=str(progress_err),
                                 )
 
-                    # LangChain v0.2+ usage_metadata
+                    # Capture usage from chunks or final output
                     usage = getattr(output, "usage_metadata", None)
+                    if not usage:
+                        # Fallback to response_metadata or additional_kwargs
+                        resp_meta = getattr(output, "response_metadata", {})
+                        usage = (
+                            resp_meta.get("token_usage")
+                            or output.additional_kwargs.get("usage")
+                            or output.additional_kwargs.get("token_usage")
+                        )
+
                     if usage:
-                        prompt_tokens += usage.get("input_tokens", 0)
-                        completion_tokens += usage.get("output_tokens", 0)
-                    else:
-                        # Legacy/fallback additional_kwargs
-                        usage_obj = output.additional_kwargs.get("usage")
-                        if usage_obj:
-                            prompt_tokens += usage_obj.get("prompt_tokens", 0)
-                            completion_tokens += usage_obj.get("completion_tokens", 0)
+                        prompt_tokens += (
+                            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+                        )
+                        completion_tokens += (
+                            usage.get("output_tokens")
+                            or usage.get("completion_tokens")
+                            or 0
+                        )
 
     except Exception as e:
         error_msg = f"\n\n*An error occurred: {e}*"
