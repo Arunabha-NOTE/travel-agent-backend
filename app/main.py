@@ -150,5 +150,6 @@ async def root():
 
 
 @app.get("/health", include_in_schema=False)
+@app.get(f"{settings.API_V1_PREFIX}/health", include_in_schema=False)
 async def health():
-    return {"status": "ok"}
+    return {"message": "ok"}
