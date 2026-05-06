@@ -1520,7 +1520,7 @@ async def search_flights(
         if retry_flights_found:
             result = retry_result
 
-    # Truncate response slightly to save LLM context
+    # Clean up response metadata to save LLM context
     if isinstance(result, dict):
         result.setdefault("search_parameters", {})
         result["search_parameters"]["resolved_departure_id"] = normalized_departure_id
@@ -1529,10 +1529,6 @@ async def search_flights(
             "departure": departure_used_serp_fallback,
             "arrival": arrival_used_serp_fallback,
         }
-        if "best_flights" in result:
-            result["best_flights"] = result.get("best_flights", [])[:3]
-        if "other_flights" in result:
-            result["other_flights"] = result.get("other_flights", [])[:5]
         if "search_metadata" in result:
             for k in ["raw_html_file", "prettify_html_file"]:
                 result["search_metadata"].pop(k, None)
