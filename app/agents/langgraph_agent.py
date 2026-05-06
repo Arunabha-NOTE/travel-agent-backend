@@ -410,6 +410,16 @@ async def run_langgraph_agent(
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
                 tool_output = event.get("data", {}).get("output")
+                tool_input = event.get("data", {}).get("input")
+
+                logger.info(
+                    "LangGraph tool completed",
+                    chat_id=chat_id,
+                    tool=tool_name,
+                    full_input=tool_input,
+                    full_output=str(tool_output) if tool_output else None,
+                )
+
                 if tool_name == "update_itinerary_panel" and pending_tool_snapshot:
                     try:
                         (

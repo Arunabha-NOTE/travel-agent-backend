@@ -2145,6 +2145,7 @@ async def run_langchain_agent(
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
                 tool_output = event.get("data", {}).get("output")
+                tool_input = event.get("data", {}).get("input")
                 output_text = _tool_output_to_text(tool_output)
                 tool_status = _classify_tool_output(tool_name, output_text)
                 preview = output_text[:240]
@@ -2153,6 +2154,8 @@ async def run_langchain_agent(
                     "tool": tool_name,
                     "status": tool_status,
                     "preview": preview,
+                    "full_input": tool_input,
+                    "full_output": output_text,
                 }
                 if tool_status in {
                     "error",
