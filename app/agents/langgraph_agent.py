@@ -382,9 +382,16 @@ async def run_langgraph_agent(
                     "get_weather",
                 }:
                     grounding_tools_used.add(tool_name)
-                step_label = _tool_step_label(tool_name, tool_input)
-                step_token = f"[STEP:{step_label}]"
-                yield step_token
+
+                if (
+                    tool_name == "update_itinerary_panel"
+                    and tool_name in yielded_preflight_steps
+                ):
+                    pass
+                else:
+                    step_label = _tool_step_label(tool_name, tool_input)
+                    step_token = f"[STEP:{step_label}]"
+                    yield step_token
 
                 if tool_name == "update_itinerary_panel":
                     saw_itinerary_tool_call = True
@@ -492,7 +499,6 @@ async def run_langgraph_agent(
                     finally:
                         pending_tool_snapshot = None
 
-            # LLM Streaming tokens
             elif kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
                 if chunk:
@@ -502,6 +508,18 @@ async def run_langgraph_agent(
                         # Yield tokens to UI. We prioritize showing SOMETHING over showing nothing.
                         if not node_name or "planner" in node_name:
                             yield token
+
+                    if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
+                        for tc_chunk in chunk.tool_call_chunks:
+                            name = tc_chunk.get("name")
+                            if (
+                                name == "update_itinerary_panel"
+                                and name not in yielded_preflight_steps
+                            ):
+                                yielded_preflight_steps.add(name)
+                                step_token = "[STEP:🧩 Generating itinerary details (this may take a minute)...]"
+                                full_response += step_token
+                                yield step_token
 
                     # Also capture usage from the last chunk if present
                     usage = getattr(chunk, "usage_metadata", None)
@@ -666,82 +684,81 @@ async def run_langgraph_agent(
                 context_text="\n".join([dynamic_context, user_message, final_text]),
             )
 
-        if final_text:
-            clean_response = _strip_agent_tags(final_text)
-            clean_response = re.sub(r"\[STEP:[^\]]*\]", "", clean_response).strip()
-            clean_response = _apply_fact_grounding_notice_if_needed(
-                clean_response,
-                grounding_tools_used=grounding_tools_used,
-            )
+        clean_response = _strip_agent_tags(final_text) if final_text else ""
+        clean_response = re.sub(r"\[STEP:[^\]]*\]", "", clean_response).strip()
+        clean_response = _apply_fact_grounding_notice_if_needed(
+            clean_response,
+            grounding_tools_used=grounding_tools_used,
+        )
 
-            # If the response only contained XML blocks, give it a friendly fallback
-            if not clean_response and parsed_itinerary:
-                clean_response = "✅ **Itinerary updated!** I have finalized the details and populated your travel plan. You can view the full enriched itinerary in the panel on the right."
+        # If the response only contained XML blocks, give it a friendly fallback
+        if not clean_response and parsed_itinerary:
+            clean_response = "✅ **Itinerary updated!** I have finalized the details and populated your travel plan. You can view the full enriched itinerary in the panel on the right."
 
-            # Ensure we don't save an empty string if everything was stripped
-            if not clean_response and not parsed_itinerary:
-                clean_response = "I have processed your request. Please let me know if you would like to make any adjustments."
+        # Ensure we don't save an empty string if everything was stripped
+        if not clean_response and not parsed_itinerary:
+            clean_response = "I have processed your request. Please let me know if you would like to make any adjustments."
 
-            msg_cost = calculate_minimax_cost(prompt_tokens, completion_tokens)
-            assistant_msg = ChatMessage(
-                chat_room_id=chat_id,
-                sender_role=MessageSenderRole.assistant,
-                content=clean_response,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_cost=msg_cost,
-                message_metadata={"agent": "langgraph"},
-            )
-            db.add(assistant_msg)
+        msg_cost = calculate_minimax_cost(prompt_tokens, completion_tokens)
+        assistant_msg = ChatMessage(
+            chat_room_id=chat_id,
+            sender_role=MessageSenderRole.assistant,
+            content=clean_response,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_cost=msg_cost,
+            message_metadata={"agent": "langgraph"},
+        )
+        db.add(assistant_msg)
 
-            # Update user aggregate usage
-            if user_id:
-                user_res = await db.execute(select(User).where(User.id == user_id))
-                user = user_res.scalars().first()
-                if user:
-                    user.total_tokens += prompt_tokens + completion_tokens
-                    user.total_cost += msg_cost
-                    user.token_usage_millions = float(user.total_tokens) / 1_000_000.0
+        # Update user aggregate usage
+        if user_id:
+            user_res = await db.execute(select(User).where(User.id == user_id))
+            user = user_res.scalars().first()
+            if user:
+                user.total_tokens += prompt_tokens + completion_tokens
+                user.total_cost += msg_cost
+                user.token_usage_millions = float(user.total_tokens) / 1_000_000.0
 
-            await db.flush()
+        await db.flush()
 
-            if parsed_itinerary:
-                parsed_itinerary_signature = _itinerary_signature(parsed_itinerary)
-                if parsed_itinerary_signature != last_persisted_itinerary_signature:
-                    last_persisted_itinerary_signature = await _upsert_itinerary(
-                        db,
-                        chat_id,
-                        parsed_itinerary,
-                        source="langgraph_final",
-                    )
-
-            if parsed_stage and parsed_stage != last_persisted_stage:
-                await _upsert_planning_stage(db, chat_id, parsed_stage)
-                last_persisted_stage = parsed_stage
-
-            # Persist assistant output for future KB fallback.
-            try:
-                from app.agents.rag.vector_store import add_to_knowledge_base
-
-                add_to_knowledge_base(
-                    text=(
-                        f"Assistant response (langgraph):\n"
-                        f"{clean_response}\n\n"
-                        f"Planning stage: {parsed_stage or 'unknown'}"
-                    ),
-                    metadata={
-                        "source": "assistant_response_langgraph",
-                        "chat_id": str(chat_id),
-                        "stage": parsed_stage or "unknown",
-                    },
-                    user_id=user_id,
+        if parsed_itinerary:
+            parsed_itinerary_signature = _itinerary_signature(parsed_itinerary)
+            if parsed_itinerary_signature != last_persisted_itinerary_signature:
+                last_persisted_itinerary_signature = await _upsert_itinerary(
+                    db,
+                    chat_id,
+                    parsed_itinerary,
+                    source="langgraph_final",
                 )
-            except Exception as kb_err:
-                logger.warning(
-                    "Failed to persist LangGraph response to KB",
-                    error=str(kb_err),
-                    chat_id=chat_id,
-                )
+
+        if parsed_stage and parsed_stage != last_persisted_stage:
+            await _upsert_planning_stage(db, chat_id, parsed_stage)
+            last_persisted_stage = parsed_stage
+
+        # Persist assistant output for future KB fallback.
+        try:
+            from app.agents.rag.vector_store import add_to_knowledge_base
+
+            add_to_knowledge_base(
+                text=(
+                    f"Assistant response (langgraph):\n"
+                    f"{clean_response}\n\n"
+                    f"Planning stage: {parsed_stage or 'unknown'}"
+                ),
+                metadata={
+                    "source": "assistant_response_langgraph",
+                    "chat_id": str(chat_id),
+                    "stage": parsed_stage or "unknown",
+                },
+                user_id=user_id,
+            )
+        except Exception as kb_err:
+            logger.warning(
+                "Failed to persist LangGraph response to KB",
+                error=str(kb_err),
+                chat_id=chat_id,
+            )
 
             await db.commit()
             logger.info(

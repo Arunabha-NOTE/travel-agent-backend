@@ -2116,10 +2116,16 @@ async def run_langchain_agent(
                     "get_weather",
                 }:
                     grounding_tools_used.add(tool_name)
-                step_label = _tool_step_label(tool_name, tool_input)
-                step_token = f"[STEP:{step_label}]"
-                full_response += step_token
-                yield step_token
+                if (
+                    tool_name == "update_itinerary_panel"
+                    and tool_name in yielded_preflight_steps
+                ):
+                    pass
+                else:
+                    step_label = _tool_step_label(tool_name, tool_input)
+                    step_token = f"[STEP:{step_label}]"
+                    full_response += step_token
+                    yield step_token
 
                 if tool_name == "update_itinerary_panel":
                     saw_itinerary_tool_call = True
@@ -2255,6 +2261,18 @@ async def run_langchain_agent(
                         token = chunk.content
                         full_response += token
                         yield token
+
+                    if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
+                        for tc_chunk in chunk.tool_call_chunks:
+                            name = tc_chunk.get("name")
+                            if (
+                                name == "update_itinerary_panel"
+                                and name not in yielded_preflight_steps
+                            ):
+                                yielded_preflight_steps.add(name)
+                                step_token = "[STEP:🧩 Generating itinerary details (this may take a minute)...]"
+                                full_response += step_token
+                                yield step_token
 
                     # Also capture usage from the last chunk if present
                     usage = getattr(chunk, "usage_metadata", None)
@@ -2430,6 +2448,10 @@ async def run_langchain_agent(
         # If the response only contained XML blocks, give it a friendly fallback
         if not clean_response and parsed_itinerary:
             clean_response = "✅ **Itinerary updated!** I have finalized the details and populated your travel plan. You can view the full enriched itinerary in the panel on the right."
+
+        # Ensure we don't save an empty string if everything was stripped
+        if not clean_response and not parsed_itinerary:
+            clean_response = "I have processed your request. Please let me know if you would like to make any adjustments."
 
         # Calculate cost
         msg_cost = calculate_minimax_cost(prompt_tokens, completion_tokens)
