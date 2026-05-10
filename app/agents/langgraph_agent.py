@@ -168,17 +168,21 @@ async def reflector_node(state: TravelPlanState) -> dict:
         }
 
     # We ask the reflector to judge the last AI message
-    prompt = (
-        f"{REFLECTOR_PROMPT or 'Review the planner output for correctness and completeness.'}\n\n"
-        f"PLANNER OUTPUT TO REVIEW:\n{last_content}\n\n"
-        f"CURRENT STAGE: {state['stage']}"
+    prompt_system = (
+        REFLECTOR_PROMPT
+        or "Review the planner output for correctness and completeness."
+    )
+    prompt_human = (
+        f"PLANNER OUTPUT TO REVIEW:\n{last_content}\n\nCURRENT STAGE: {state['stage']}"
     )
 
-    if not prompt.strip():
+    if not last_content.strip():
         return {"is_valid": True, "latest_reflection": None}
 
     try:
-        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        response = await llm.ainvoke(
+            [SystemMessage(content=prompt_system), HumanMessage(content=prompt_human)]
+        )
     except Exception as exc:
         err = str(exc)
         # Some providers intermittently reject reflector prompts as empty;
