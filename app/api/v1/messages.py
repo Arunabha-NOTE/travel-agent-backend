@@ -454,20 +454,29 @@ async def send_message(
 
             import asyncio
 
+            pending_task = None
             while True:
-                try:
-                    # Keep-alive every 15 seconds to prevent frontend timeout
-                    token = await asyncio.wait_for(anext(gen), timeout=15.0)
+                if pending_task is None:
+                    pending_task = asyncio.create_task(anext(gen))
+
+                done, pending = await asyncio.wait([pending_task], timeout=15.0)
+
+                if pending_task in done:
+                    try:
+                        token = pending_task.result()
+                        pending_task = None
+                    except StopAsyncIteration:
+                        break
+
                     # [STEP:...] markers are passed as-is; other tokens escape newlines
                     if token.startswith("[STEP:"):
                         yield f"data: {token}\n\n"
                     else:
                         safe_token = token.replace("\n", "\\n")
                         yield f"data: {safe_token}\n\n"
-                except asyncio.TimeoutError:
+                else:
+                    # Timeout reached, task is still pending
                     yield "data: [KEEPALIVE]\n\n"
-                except StopAsyncIteration:
-                    break
 
         except Exception as e:
             logger.exception("Stream error", error=str(e))
