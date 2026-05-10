@@ -760,14 +760,14 @@ async def run_langgraph_agent(
                 chat_id=chat_id,
             )
 
-            await db.commit()
-            logger.info(
-                "LangGraph response saved",
-                chat_id=chat_id,
-                has_itinerary=parsed_itinerary is not None,
-                stage=parsed_stage,
-                is_finalize_turn=is_finalize_turn,
-            )
+        await db.commit()
+        logger.info(
+            "LangGraph response saved",
+            chat_id=chat_id,
+            has_itinerary=parsed_itinerary is not None,
+            stage=parsed_stage,
+            is_finalize_turn=is_finalize_turn,
+        )
     except Exception as e:
         await db.rollback()
         logger.exception("Failed to save final LangGraph output", error=str(e))

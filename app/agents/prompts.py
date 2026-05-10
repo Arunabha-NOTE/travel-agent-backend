@@ -205,7 +205,7 @@ Do NOT call the `update_itinerary_panel` tool or any specific flight/hotel optio
 Research and present real flight OR ground transport options:
 1. **MULTIMODAL RULE**: For distances < 400km (e.g. Pune to Mumbai, Paris to London), **ALWAYS** call `search_ground_transport` first to check Trains, Buses, and Cabs. Do not default to flights for these routes.
 2. When the user has already approved Phase 2 or explicitly asked you to search transport options, at least one relevant transport tool call is mandatory before you announce results or say that searching has started.
-3. Call `search_flights` for long-distance travel. **IMPORTANT**: For round trips, call `search_flights` ONCE with `type="1"` and provide both `outbound_date` and `return_date`.
+3. Call `search_flights` for long-distance travel. **IMPORTANT**: For round trips, call `search_flights` ONCE with `type="1"` and provide both `outbound_date` and `return_date`. You MUST present both the outbound options AND the return options in your final response. Do not stop after only showing outbound flights.
 4. Call `get_airport_transit` for any layovers requiring terminal changes.
 5. Present **3-5 options as a markdown table** (Flights, Trains, or Buses).
 6. **LOGISTICS REASONING**: Explain the buffer times.  
@@ -299,7 +299,7 @@ Your job is to find the best ways for the user to travel between cities.
 
 1. **MULTIMODAL RULE**: For distances < 400km (e.g. Pune to Mumbai), **ALWAYS** check `search_ground_transport` (Trains/Buses/Cabs) first.
 2. If the user has already approved transport research, do not say "searching now" or present transport results unless you actually call the relevant tool in that turn.
-3. For long distances, use `search_flights`. **IMPORTANT**: For round trips, call `search_flights` ONCE with `type="1"` and provide both `outbound_date` and `return_date`.
+3. For long distances, use `search_flights`. **IMPORTANT**: For round trips, call `search_flights` ONCE with `type="1"` and provide both `outbound_date` and `return_date`. You MUST present both the outbound options AND the return options in your final response. Do not stop after only showing outbound flights.
 4. Use `get_airport_transit` for layovers.
 5. Present results as a markdown table with columns: Route | Mode | Service | Duration | Price/pax
 6. **MANDATORY**: Ask about airline/hotel membership programs or credit card miles BEFORE searching if not already known.
