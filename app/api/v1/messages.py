@@ -452,13 +452,22 @@ async def send_message(
                     user_id=current_user.id,
                 )
 
-            async for token in gen:
-                # [STEP:...] markers are passed as-is; other tokens escape newlines
-                if token.startswith("[STEP:"):
-                    yield f"data: {token}\n\n"
-                else:
-                    safe_token = token.replace("\n", "\\n")
-                    yield f"data: {safe_token}\n\n"
+            import asyncio
+
+            while True:
+                try:
+                    # Keep-alive every 15 seconds to prevent frontend timeout
+                    token = await asyncio.wait_for(anext(gen), timeout=15.0)
+                    # [STEP:...] markers are passed as-is; other tokens escape newlines
+                    if token.startswith("[STEP:"):
+                        yield f"data: {token}\n\n"
+                    else:
+                        safe_token = token.replace("\n", "\\n")
+                        yield f"data: {safe_token}\n\n"
+                except asyncio.TimeoutError:
+                    yield "data: [KEEPALIVE]\n\n"
+                except StopAsyncIteration:
+                    break
 
         except Exception as e:
             logger.exception("Stream error", error=str(e))
